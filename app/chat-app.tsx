@@ -41,7 +41,7 @@ import {
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, setupRemote } from "./api-client";
-import { canUseDeviceEncryption, decryptRemoteRecord, encryptRemoteRecord, ensureDeviceVaultKey, loadEncryptedRecord } from "./secure-storage";
+import { canUseDeviceEncryption, decryptRemoteRecord, encryptRemoteRecord, loadEncryptedRecord, prepareDeviceVault } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
 type Message = {
@@ -150,6 +150,19 @@ const initialConversations: Conversation[] = [
 ];
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
+
+async function prepareUserDeviceVault(user: LocalUser, password?: string): Promise<void> {
+  const recordName = `conversations:${user.username}`;
+  const remote = await fetchEncryptedRecord(recordName);
+  await prepareDeviceVault<Conversation[]>(
+    user.username,
+    recordName,
+    remote,
+    (record) => saveEncryptedRecordRemote(recordName, record),
+    password ? { password, salt: user.vaultSalt, iterations: user.vaultIterations } : undefined,
+  );
+}
+
 function LoginScreen({ initialized, onLogin, onSetup }: {
   initialized: boolean;
   onLogin: (username: string, password: string) => Promise<string | null>;
@@ -277,7 +290,7 @@ export default function ChatApp() {
         if (cancelled) return;
         if (sessionUser) {
           const encryptionEnabled = canUseDeviceEncryption();
-          if (encryptionEnabled) await ensureDeviceVaultKey(sessionUser.username);
+          if (encryptionEnabled) await prepareUserDeviceVault(sessionUser);
           setDeviceEncryptionEnabled(encryptionEnabled);
           setCurrentUser(sessionUser);
           setAuthenticated(true);
@@ -743,7 +756,7 @@ export default function ChatApp() {
     try {
       const user = await loginRemote(normalizeUsername(username), password);
       const encryptionEnabled = canUseDeviceEncryption();
-      if (encryptionEnabled) await ensureDeviceVaultKey(user.username);
+      if (encryptionEnabled) await prepareUserDeviceVault(user, password);
       setUsers(user.role === "admin" ? await fetchUsers() : []);
       setHydrated(false);
       setSecureStorageReady(false);
@@ -764,7 +777,7 @@ export default function ChatApp() {
       const normalized = normalizeUsername(username);
       const user = await setupRemote(normalized, password);
       const encryptionEnabled = canUseDeviceEncryption();
-      if (encryptionEnabled) await ensureDeviceVaultKey(user.username);
+      if (encryptionEnabled) await prepareUserDeviceVault(user, password);
       setUsers([user]);
       setHydrated(false);
       setSecureStorageReady(false);

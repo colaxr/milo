@@ -3,6 +3,7 @@ const DATABASE_VERSION = 1;
 const KEY_STORE = "keys";
 const RECORD_STORE = "records";
 const DEVICE_STORAGE_KEY = "device-storage-key-v1";
+const DEVICE_VAULT_MODE = "device-vault-v2";
 const AAD_PREFIX = "milo:secure-record:v1:";
 
 export type EncryptedRecord = {
@@ -105,6 +106,14 @@ function remoteKeyName(username: string): string {
   return `remote-vault:${username}`;
 }
 
+function remoteModeName(username: string): string {
+  return `remote-vault-mode:${username}`;
+}
+
+function remoteLegacyKeyName(username: string): string {
+  return `remote-vault-legacy:${username}`;
+}
+
 async function readRemoteKey(username: string): Promise<CryptoKey | undefined> {
   const database = await openDatabase();
   const transaction = database.transaction(KEY_STORE, "readonly");
@@ -117,26 +126,79 @@ export function canUseDeviceEncryption(): boolean {
     && Boolean(window.indexedDB);
 }
 
-export async function ensureDeviceVaultKey(username: string): Promise<void> {
-  if (await readRemoteKey(username)) return;
-  const key = await window.crypto.subtle.generateKey(
+async function generateDeviceVaultKey(): Promise<CryptoKey> {
+  return window.crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
     false,
     ["encrypt", "decrypt"],
   );
+}
+
+async function deviceVaultReady(username: string): Promise<boolean> {
+  const database = await openDatabase();
+  const transaction = database.transaction(KEY_STORE, "readonly");
+  const mode = await requestResult<string | undefined>(transaction.objectStore(KEY_STORE).get(remoteModeName(username)));
+  return mode === DEVICE_VAULT_MODE && Boolean(await readRemoteKey(username));
+}
+
+async function persistDeviceVault(username: string, key: CryptoKey): Promise<void> {
   const database = await openDatabase();
   const transaction = database.transaction(KEY_STORE, "readwrite");
-  transaction.objectStore(KEY_STORE).put(key, remoteKeyName(username));
+  const store = transaction.objectStore(KEY_STORE);
+  store.put(key, remoteKeyName(username));
+  store.delete(remoteLegacyKeyName(username));
+  store.put(DEVICE_VAULT_MODE, remoteModeName(username));
   await transactionComplete(transaction);
+}
+
+async function persistPendingDeviceVault(username: string, key: CryptoKey, legacyKey: CryptoKey): Promise<void> {
+  const database = await openDatabase();
+  const transaction = database.transaction(KEY_STORE, "readwrite");
+  const store = transaction.objectStore(KEY_STORE);
+  store.put(key, remoteKeyName(username));
+  store.put(legacyKey, remoteLegacyKeyName(username));
+  store.put("pending", remoteModeName(username));
+  await transactionComplete(transaction);
+}
+
+async function finalizeDeviceVault(username: string): Promise<void> {
+  const database = await openDatabase();
+  const transaction = database.transaction(KEY_STORE, "readwrite");
+  const store = transaction.objectStore(KEY_STORE);
+  store.delete(remoteLegacyKeyName(username));
+  store.put(DEVICE_VAULT_MODE, remoteModeName(username));
+  await transactionComplete(transaction);
+}
+
+async function readPendingLegacyKey(username: string): Promise<CryptoKey | undefined> {
+  const database = await openDatabase();
+  const transaction = database.transaction(KEY_STORE, "readonly");
+  return requestResult(transaction.objectStore(KEY_STORE).get(remoteLegacyKeyName(username)));
+}
+
+// Compatibility only: converts password-derived v1 records to a random device key once.
+async function deriveLegacyVaultKey(password: string, salt: string, iterations: number): Promise<CryptoKey> {
+  const material = await window.crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  return window.crypto.subtle.deriveKey(
+    { name: "PBKDF2", hash: "SHA-256", salt: base64ToBytes(salt), iterations },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
 }
 
 function remoteAdditionalData(username: string, recordName: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(`${REMOTE_AAD_PREFIX}${username}:${recordName}`);
 }
 
-export async function encryptRemoteRecord<T>(username: string, recordName: string, value: T): Promise<EncryptedRecord> {
-  const key = await readRemoteKey(username);
-  if (!key) throw new Error("Remote vault is locked");
+async function encryptRemoteRecordWithKey<T>(key: CryptoKey, username: string, recordName: string, value: T): Promise<EncryptedRecord> {
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
   const ciphertext = await window.crypto.subtle.encrypt(
@@ -153,9 +215,7 @@ export async function encryptRemoteRecord<T>(username: string, recordName: strin
   };
 }
 
-export async function decryptRemoteRecord<T>(username: string, recordName: string, record: EncryptedRecord): Promise<T> {
-  const key = await readRemoteKey(username);
-  if (!key) throw new Error("Remote vault is locked");
+async function decryptRemoteRecordWithKey<T>(key: CryptoKey, username: string, recordName: string, record: EncryptedRecord): Promise<T> {
   const plaintext = await window.crypto.subtle.decrypt(
     {
       name: "AES-GCM",
@@ -167,6 +227,61 @@ export async function decryptRemoteRecord<T>(username: string, recordName: strin
     base64ToBytes(record.ciphertext),
   );
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
+}
+
+export async function prepareDeviceVault<T>(
+  username: string,
+  recordName: string,
+  remoteRecord: EncryptedRecord | null,
+  saveMigrated: (record: EncryptedRecord) => Promise<void>,
+  legacy?: { password: string; salt: string; iterations: number },
+): Promise<void> {
+  if (await deviceVaultReady(username)) return;
+  const existing = await readRemoteKey(username);
+  const pendingLegacy = await readPendingLegacyKey(username);
+  if (existing && pendingLegacy && remoteRecord) {
+    try {
+      await decryptRemoteRecordWithKey<T>(existing, username, recordName, remoteRecord);
+      await finalizeDeviceVault(username);
+      return;
+    } catch {
+      const plaintext = await decryptRemoteRecordWithKey<T>(pendingLegacy, username, recordName, remoteRecord);
+      const migrated = await encryptRemoteRecordWithKey(existing, username, recordName, plaintext);
+      await saveMigrated(migrated);
+      await finalizeDeviceVault(username);
+      return;
+    }
+  }
+  let plaintext: T | null = null;
+  let sourceKey: CryptoKey | null = existing ?? null;
+  if (remoteRecord) {
+    sourceKey = sourceKey ?? (legacy
+      ? await deriveLegacyVaultKey(legacy.password, legacy.salt, legacy.iterations)
+      : null);
+    if (!sourceKey) throw new Error("DEVICE_KEY_LOGIN_REQUIRED");
+    plaintext = await decryptRemoteRecordWithKey<T>(sourceKey, username, recordName, remoteRecord);
+  }
+  const deviceKey = await generateDeviceVaultKey();
+  if (plaintext === null || !sourceKey) {
+    await persistDeviceVault(username, deviceKey);
+    return;
+  }
+  const migrated = await encryptRemoteRecordWithKey(deviceKey, username, recordName, plaintext);
+  await persistPendingDeviceVault(username, deviceKey, sourceKey);
+  await saveMigrated(migrated);
+  await finalizeDeviceVault(username);
+}
+
+export async function encryptRemoteRecord<T>(username: string, recordName: string, value: T): Promise<EncryptedRecord> {
+  const key = await readRemoteKey(username);
+  if (!key) throw new Error("Remote vault is locked");
+  return encryptRemoteRecordWithKey(key, username, recordName, value);
+}
+
+export async function decryptRemoteRecord<T>(username: string, recordName: string, record: EncryptedRecord): Promise<T> {
+  const key = await readRemoteKey(username);
+  if (!key) throw new Error("Remote vault is locked");
+  return decryptRemoteRecordWithKey<T>(key, username, recordName, record);
 }
 
 export async function saveEncryptedRecord<T>(recordName: string, value: T): Promise<void> {

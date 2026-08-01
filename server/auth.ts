@@ -29,7 +29,7 @@ type UserRow = {
   created_at: string;
 };
 
-export type PublicUser = Pick<UserDocument, "username" | "displayName" | "role"> & { createdAt: string };
+export type PublicUser = Omit<UserDocument, "passwordSalt" | "passwordHash" | "createdAt"> & { createdAt: string };
 
 function normalizeUsername(value: string): string {
   return value.trim().toLowerCase();
@@ -145,6 +145,8 @@ export function toPublicUser(user: UserDocument): PublicUser {
     username: user.username,
     displayName: user.displayName,
     role: user.role,
+    vaultSalt: user.vaultSalt,
+    vaultIterations: user.vaultIterations,
     createdAt: user.createdAt.toISOString(),
   };
 }

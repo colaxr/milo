@@ -2,6 +2,8 @@ export type LocalUser = {
   username: string;
   displayName: string;
   role: "admin" | "user";
+  vaultSalt: string;
+  vaultIterations: number;
   createdAt: string;
 };
 
