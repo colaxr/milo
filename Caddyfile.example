@@ -1,4 +1,0 @@
-chat.example.com {
-  encode zstd gzip
-  reverse_proxy milo-app:3000
-}

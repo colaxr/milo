@@ -62,8 +62,10 @@ test("keeps database, encrypted storage, auth, and deployment wiring", async () 
   assert.match(workflow, /ghcr\.io\/\$\{\{ github\.repository_owner \}\}\/milo-mongo/);
   assert.match(readme, /docker pull ghcr\.io\/colaxr\/milo:latest/);
   assert.match(readme, /docker pull ghcr\.io\/colaxr\/milo-mongo:8\.0\.28/);
+  assert.match(readme, /-p 127\.0\.0\.1:3000:3000/);
   assert.match(readme, /docker run -d/);
   assert.match(readme, /milo-mongo-data:\/data\/db/);
   assert.match(readme, /mongodump --archive --gzip/);
+  assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);
   assert.doesNotMatch(readme, /当前能力|功能|私信|端到端加密|管理员账户/);
 });
