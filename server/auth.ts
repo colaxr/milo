@@ -178,8 +178,16 @@ export function createSession(username: string): { token: string; expiresAt: Dat
   return { token, expiresAt };
 }
 
-export function sessionCookie(token: string, expiresAt: Date): string {
-  const secure = process.env.SESSION_COOKIE_SECURE !== "false";
+function secureSessionCookie(request: Request): boolean {
+  if (process.env.SESSION_COOKIE_SECURE === "true") return true;
+  if (process.env.SESSION_COOKIE_SECURE === "false") return false;
+  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwardedProtocol) return forwardedProtocol === "https";
+  return new URL(request.url).protocol === "https:";
+}
+
+export function sessionCookie(token: string, expiresAt: Date, request: Request): string {
+  const secure = secureSessionCookie(request);
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Expires=${expiresAt.toUTCString()}${secure ? "; Secure" : ""}`;
 }
 

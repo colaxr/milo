@@ -45,6 +45,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(auth, /scrypt/);
   assert.match(auth, /timingSafeEqual/);
   assert.match(auth, /HttpOnly; SameSite=Strict/);
+  assert.match(auth, /x-forwarded-proto/);
+  assert.match(auth, /new URL\(request\.url\)\.protocol/);
   assert.match(auth, /BEGIN IMMEDIATE/);
   assert.match(sqlite, /DatabaseSync/);
   assert.match(sqlite, /PRAGMA journal_mode = WAL/);
@@ -72,7 +74,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(workflow, /ghcr\.io\/\$\{\{ github\.repository \}\}/);
   assert.doesNotMatch(workflow, /milo-mongo|Dockerfile\.mongo/);
   assert.match(readme, /ghcr\.io\/colaxr\/milo:latest/);
-  assert.match(readme, /-p 127\.0\.0\.1:3000:3000/);
+  assert.match(readme, /-p 3000:3000/);
+  assert.match(readme, /http:\/\/<VPS-IP>:3000/);
+  assert.doesNotMatch(readme, /127\.0\.0\.1:3000/);
   assert.match(readme, /docker run -d/);
   assert.match(readme, /--pull=always/);
   assert.match(readme, /docker rm -f milo/);

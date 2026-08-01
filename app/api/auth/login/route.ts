@@ -14,7 +14,7 @@ export async function POST(request: Request): Promise<Response> {
     const session = await createSession(user.username);
     return json(
       { user: toPublicUser(user) },
-      { headers: { "set-cookie": sessionCookie(session.token, session.expiresAt) } },
+      { headers: { "set-cookie": sessionCookie(session.token, session.expiresAt, request) } },
     );
   } catch {
     return apiError("login unavailable", 503);
