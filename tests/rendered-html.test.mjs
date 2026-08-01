@@ -27,7 +27,7 @@ test("server-renders the Milo application shell", async () => {
 });
 
 test("keeps database, encrypted storage, auth, and deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, mongo, recordsRoute, dockerfile, mongoDockerfile, readme] = await Promise.all([
+  const [chatApp, secureStorage, auth, mongo, recordsRoute, dockerfile, mongoDockerfile, workflow, readme] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
@@ -35,6 +35,7 @@ test("keeps database, encrypted storage, auth, and deployment wiring", async () 
     readFile(new URL("../app/api/records/[name]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile.mongo", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/publish-images.yml", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
   ]);
 
@@ -55,7 +56,12 @@ test("keeps database, encrypted storage, auth, and deployment wiring", async () 
   assert.match(dockerfile, /\/api\/health/);
   assert.match(dockerfile, /--hostname", "0\.0\.0\.0"/);
   assert.match(mongoDockerfile, /mongo:8\.0\.28-noble/);
-  assert.match(readme, /docker build -t milo-app:latest/);
+  assert.match(workflow, /packages: write/);
+  assert.match(workflow, /linux\/amd64,linux\/arm64/);
+  assert.match(workflow, /ghcr\.io\/\$\{\{ github\.repository \}\}/);
+  assert.match(workflow, /ghcr\.io\/\$\{\{ github\.repository_owner \}\}\/milo-mongo/);
+  assert.match(readme, /docker pull ghcr\.io\/colaxr\/milo:latest/);
+  assert.match(readme, /docker pull ghcr\.io\/colaxr\/milo-mongo:8\.0\.28/);
   assert.match(readme, /docker run -d/);
   assert.match(readme, /milo-mongo-data:\/data\/db/);
   assert.match(readme, /mongodump --archive --gzip/);
