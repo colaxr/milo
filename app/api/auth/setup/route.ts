@@ -13,7 +13,7 @@ export async function POST(request: Request): Promise<Response> {
     const session = createSession(user.username);
     return json(
       { user: toPublicUser(user) },
-      { status: 201, headers: { "set-cookie": sessionCookie(session.token, session.expiresAt) } },
+      { status: 201, headers: { "set-cookie": sessionCookie(session.token, session.expiresAt, request) } },
     );
   } catch (error) {
     if (error instanceof Error && error.message === "INVALID_USERNAME") return apiError("invalid username", 400);
