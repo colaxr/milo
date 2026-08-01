@@ -299,6 +299,7 @@ h1, h2, p { margin-top: 0; }
 .confirm-card > div:last-child button { height: 39px; border: 0; border-radius: 10px; background: #f2f0ec; color: #666; font-size: 10px; cursor: pointer; }
 .confirm-card > div:last-child .confirm-danger { background: #cf6251; color: white; }
 .app-toast { position: fixed; z-index: 30; left: 50%; top: 24px; transform: translateX(-50%); padding: 10px 16px; border-radius: 999px; background: #2b2b2b; color: white; box-shadow: 0 10px 28px rgba(0,0,0,.2); font-size: 10px; animation: toast-in .2s ease both; }
+.http-test-banner { position: fixed; z-index: 29; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: calc(100vw - 24px); padding: 8px 14px; border-radius: 8px; background: #1f3a5f; color: #fff; box-shadow: 0 8px 22px rgba(31,58,95,.24); font-size: 11px; line-height: 1.4; text-align: center; white-space: nowrap; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, -8px); } }
 
 @media (max-width: 1050px) {

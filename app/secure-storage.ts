@@ -111,6 +111,12 @@ async function readRemoteKey(username: string): Promise<CryptoKey | undefined> {
   return requestResult(transaction.objectStore(KEY_STORE).get(remoteKeyName(username)));
 }
 
+export function canUseDeviceEncryption(): boolean {
+  return window.isSecureContext
+    && Boolean(window.crypto?.subtle)
+    && Boolean(window.indexedDB);
+}
+
 export async function hasRemoteVaultKey(username: string): Promise<boolean> {
   return Boolean(await readRemoteKey(username));
 }

@@ -24,6 +24,8 @@ docker run -d \
 http://<VPS-IP>:3000
 ```
 
+HTTP 可用于初始化和登录测试。正式使用时请配置 HTTPS；聊天记录加密只会在 HTTPS 或 `localhost` 安全环境中启用。
+
 ## 后续更新
 
 ```bash
