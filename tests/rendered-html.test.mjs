@@ -41,6 +41,7 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
 
   assert.match(secureStorage, /AES-GCM/);
   assert.match(secureStorage, /PBKDF2/);
+  assert.match(secureStorage, /window\.isSecureContext/);
   assert.match(secureStorage, /remoteAdditionalData/);
   assert.match(auth, /scrypt/);
   assert.match(auth, /timingSafeEqual/);
@@ -61,6 +62,7 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(setupRoute, /sessionCookie/);
   assert.match(chatApp, /fetchInitializationStatus/);
   assert.match(chatApp, /setupRemote/);
+  assert.match(chatApp, /HTTP 测试模式：已登录/);
   assert.match(chatApp, /conversations:\$\{currentUser\.username\}/);
   assert.match(chatApp, /currentUser\?\.role === "admin"/);
   assert.match(dockerfile, /HEALTHCHECK/);
