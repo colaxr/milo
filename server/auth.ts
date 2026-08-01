@@ -1,6 +1,5 @@
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import type { Collection } from "mongodb";
-import { ensureDatabase } from "./mongodb";
+import { getDatabase } from "./sqlite";
 
 const SESSION_COOKIE = "milo_session";
 const PASSWORD_KEY_LENGTH = 64;
@@ -19,11 +18,15 @@ export type UserDocument = {
   createdAt: Date;
 };
 
-type SessionDocument = {
-  tokenHash: string;
+type UserRow = {
   username: string;
-  createdAt: Date;
-  expiresAt: Date;
+  display_name: string;
+  role: UserRole;
+  password_salt: string;
+  password_hash: string;
+  vault_salt: string;
+  vault_iterations: number;
+  created_at: string;
 };
 
 export type PublicUser = Omit<UserDocument, "passwordSalt" | "passwordHash" | "createdAt"> & { createdAt: string };
@@ -32,8 +35,17 @@ function normalizeUsername(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function users(database: Awaited<ReturnType<typeof ensureDatabase>>): Collection<UserDocument> {
-  return database.collection<UserDocument>("users");
+function fromRow(row: UserRow): UserDocument {
+  return {
+    username: row.username,
+    displayName: row.display_name,
+    role: row.role,
+    passwordSalt: row.password_salt,
+    passwordHash: row.password_hash,
+    vaultSalt: row.vault_salt,
+    vaultIterations: row.vault_iterations,
+    createdAt: new Date(row.created_at),
+  };
 }
 
 async function passwordHash(password: string, salt: Buffer): Promise<Buffer> {
@@ -71,20 +83,57 @@ export async function createUserDocument(
   };
 }
 
-export async function ensureAdmin(): Promise<void> {
-  const database = await ensureDatabase();
-  const username = normalizeUsername(process.env.ADMIN_USERNAME ?? "admin");
-  if (await users(database).findOne({ username }, { projection: { _id: 1 } })) return;
-  const password = process.env.ADMIN_PASSWORD;
-  if (!password) throw new Error("ADMIN_PASSWORD is required for first startup");
-  const document = await createUserDocument(username, process.env.ADMIN_DISPLAY_NAME ?? "ADMIN", password, "admin");
-  await users(database).updateOne({ username }, { $setOnInsert: document }, { upsert: true });
+export function insertUser(user: UserDocument): void {
+  getDatabase().prepare(`
+    INSERT INTO users (
+      username, display_name, role, password_salt, password_hash,
+      vault_salt, vault_iterations, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    user.username,
+    user.displayName,
+    user.role,
+    user.passwordSalt,
+    user.passwordHash,
+    user.vaultSalt,
+    user.vaultIterations,
+    user.createdAt.toISOString(),
+  );
+}
+
+export function usersExist(): boolean {
+  const row = getDatabase().prepare("SELECT 1 AS found FROM users LIMIT 1").get() as { found: number } | undefined;
+  return Boolean(row?.found);
+}
+
+export async function createFirstAdmin(username: string, displayName: string, password: string): Promise<UserDocument> {
+  const user = await createUserDocument(username, displayName, password, "admin");
+  const database = getDatabase();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = database.prepare("SELECT 1 AS found FROM users LIMIT 1").get();
+    if (existing) throw new Error("ALREADY_INITIALIZED");
+    insertUser(user);
+    database.exec("COMMIT");
+    return user;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function listUsers(): UserDocument[] {
+  const rows = getDatabase().prepare("SELECT * FROM users ORDER BY created_at ASC").all() as UserRow[];
+  return rows.map(fromRow);
+}
+
+function findUser(username: string): UserDocument | null {
+  const row = getDatabase().prepare("SELECT * FROM users WHERE username = ?").get(normalizeUsername(username)) as UserRow | undefined;
+  return row ? fromRow(row) : null;
 }
 
 export async function verifyCredentials(username: string, password: string): Promise<UserDocument | null> {
-  await ensureAdmin();
-  const database = await ensureDatabase();
-  const user = await users(database).findOne({ username: normalizeUsername(username) });
+  const user = findUser(username);
   if (!user) return null;
   const expected = Buffer.from(user.passwordHash, "base64");
   const actual = await passwordHash(password, Buffer.from(user.passwordSalt, "base64"));
@@ -115,17 +164,17 @@ function cookieValue(request: Request): string | null {
   return null;
 }
 
-export async function createSession(username: string): Promise<{ token: string; expiresAt: Date }> {
-  const database = await ensureDatabase();
+export function createSession(username: string): { token: string; expiresAt: Date } {
+  const database = getDatabase();
   const token = randomBytes(32).toString("base64url");
   const days = Math.min(Math.max(Number(process.env.SESSION_TTL_DAYS ?? 30), 1), 90);
-  const expiresAt = new Date(Date.now() + days * 86_400_000);
-  await database.collection<SessionDocument>("sessions").insertOne({
-    tokenHash: tokenHash(token),
-    username,
-    createdAt: new Date(),
-    expiresAt,
-  });
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + days * 86_400_000);
+  database.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(createdAt.toISOString());
+  database.prepare(`
+    INSERT INTO sessions (token_hash, username, created_at, expires_at)
+    VALUES (?, ?, ?, ?)
+  `).run(tokenHash(token), username, createdAt.toISOString(), expiresAt.toISOString());
   return { token, expiresAt };
 }
 
@@ -138,21 +187,24 @@ export function expiredSessionCookie(): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
 }
 
-export async function sessionUser(request: Request): Promise<UserDocument | null> {
+export function sessionUser(request: Request): UserDocument | null {
   const token = cookieValue(request);
   if (!token) return null;
-  const database = await ensureDatabase();
-  const session = await database.collection<SessionDocument>("sessions").findOne({
-    tokenHash: tokenHash(token),
-    expiresAt: { $gt: new Date() },
-  });
-  if (!session) return null;
-  return users(database).findOne({ username: session.username });
+  const row = getDatabase().prepare(`
+    SELECT users.*
+    FROM sessions
+    JOIN users ON users.username = sessions.username
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+  `).get(tokenHash(token), new Date().toISOString()) as UserRow | undefined;
+  return row ? fromRow(row) : null;
 }
 
-export async function deleteSession(request: Request): Promise<void> {
+export function deleteSession(request: Request): void {
   const token = cookieValue(request);
   if (!token) return;
-  const database = await ensureDatabase();
-  await database.collection<SessionDocument>("sessions").deleteOne({ tokenHash: tokenHash(token) });
+  getDatabase().prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash(token));
+}
+
+export function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("UNIQUE constraint failed");
 }

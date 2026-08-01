@@ -1,5 +1,5 @@
 import { sessionUser } from "../../../../server/auth";
-import { ensureDatabase } from "../../../../server/mongodb";
+import { getDatabase } from "../../../../server/sqlite";
 import { apiError, json } from "../../../../server/responses";
 
 export const dynamic = "force-dynamic";
@@ -12,13 +12,10 @@ type EncryptedPayload = {
   updatedAt: string;
 };
 
-type RecordDocument = {
-  username: string;
-  name: string;
-  payload: EncryptedPayload;
+type RecordRow = {
+  payload: string;
   revision: number;
-  createdAt: Date;
-  updatedAt: Date;
+  updated_at: string;
 };
 
 function validName(name: string): boolean {
@@ -39,14 +36,23 @@ function validPayload(value: unknown): value is EncryptedPayload {
 
 export async function GET(request: Request, context: { params: Promise<{ name: string }> }): Promise<Response> {
   try {
-    const user = await sessionUser(request);
+    const user = sessionUser(request);
     if (!user) return apiError("unauthorized", 401);
     const { name } = await context.params;
     if (!validName(name)) return apiError("invalid record name", 400);
-    const database = await ensureDatabase();
-    const record = await database.collection<RecordDocument>("records").findOne({ username: user.username, name });
+    const record = getDatabase().prepare(`
+      SELECT payload, revision, updated_at
+      FROM records
+      WHERE username = ? AND name = ?
+    `).get(user.username, name) as RecordRow | undefined;
     if (!record) return json({ record: null });
-    return json({ record: { payload: record.payload, revision: record.revision, updatedAt: record.updatedAt.toISOString() } });
+    return json({
+      record: {
+        payload: JSON.parse(record.payload) as EncryptedPayload,
+        revision: record.revision,
+        updatedAt: record.updated_at,
+      },
+    });
   } catch {
     return apiError("record unavailable", 503);
   }
@@ -54,24 +60,23 @@ export async function GET(request: Request, context: { params: Promise<{ name: s
 
 export async function PUT(request: Request, context: { params: Promise<{ name: string }> }): Promise<Response> {
   try {
-    const user = await sessionUser(request);
+    const user = sessionUser(request);
     if (!user) return apiError("unauthorized", 401);
     const { name } = await context.params;
     if (!validName(name)) return apiError("invalid record name", 400);
     const body = await request.json() as { payload?: unknown };
     if (!validPayload(body.payload)) return apiError("invalid encrypted payload", 400);
-    const now = new Date();
-    const database = await ensureDatabase();
-    const result = await database.collection<RecordDocument>("records").findOneAndUpdate(
-      { username: user.username, name },
-      {
-        $set: { payload: body.payload, updatedAt: now },
-        $setOnInsert: { username: user.username, name, createdAt: now },
-        $inc: { revision: 1 },
-      },
-      { upsert: true, returnDocument: "after" },
-    );
-    return json({ revision: result?.revision ?? 1, updatedAt: now.toISOString() });
+    const now = new Date().toISOString();
+    const result = getDatabase().prepare(`
+      INSERT INTO records (username, name, payload, revision, created_at, updated_at)
+      VALUES (?, ?, ?, 1, ?, ?)
+      ON CONFLICT(username, name) DO UPDATE SET
+        payload = excluded.payload,
+        revision = records.revision + 1,
+        updated_at = excluded.updated_at
+      RETURNING revision
+    `).get(user.username, name, JSON.stringify(body.payload), now, now) as { revision: number };
+    return json({ revision: result.revision, updatedAt: now });
   } catch {
     return apiError("record save unavailable", 503);
   }
