@@ -125,6 +125,12 @@ h1, h2, p { margin-top: 0; }
 .mobile-main-nav { display: none; }
 
 .chat-panel { min-width: 0; display: flex; flex-direction: column; background: #ededed; position: relative; }
+.empty-chat-state { flex: 1; padding: 32px; display: grid; place-content: center; justify-items: center; text-align: center; color: #8b8f94; }
+.empty-chat-state > span { width: 64px; height: 64px; margin-bottom: 16px; display: grid; place-items: center; border-radius: 18px; background: #e2e5e9; color: #1f3a5f; }
+.empty-chat-state strong { color: #45494e; font-size: 15px; }
+.empty-chat-state p { margin: 8px 0 18px; font-size: 11px; }
+.empty-chat-state button { min-height: 38px; padding: 0 15px; border: 0; border-radius: 9px; display: flex; align-items: center; gap: 7px; background: #1f3a5f; color: #fff; font-size: 11px; cursor: pointer; }
+.empty-chat-state button:hover { background: #182f4f; }
 .chat-header { height: 84px; padding: 0 26px; border-bottom: 1px solid #d8d8d8; display: flex; align-items: center; gap: 12px; background: rgba(237,237,237,.94); backdrop-filter: blur(14px); z-index: 2; }
 .chat-person { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .chat-person strong { font-size: 14px; }

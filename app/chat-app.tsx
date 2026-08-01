@@ -78,76 +78,12 @@ type Conversation = {
 
 type MainView = "messages" | "contacts" | "notifications";
 
-const initialConversations: Conversation[] = [
-  {
-    id: "lin",
-    name: "林知夏",
-    handle: "@zhixia",
-    initials: "夏",
-    color: "#f1a57d",
-    online: true,
-    unread: 0,
-    lastSeen: "在线",
-    messages: [
-      { id: "l1", body: "你发的首页方向我看到了，整体感觉很舒服。", mine: false, time: "10:21" },
-      { id: "l2", body: "我把信息层级又收了一遍，现在主操作会更明确。", mine: true, time: "10:24", status: "read" },
-      { id: "l3", body: "好呀。那个留白可以保留，看起来很有呼吸感。", mine: false, time: "10:26", reaction: "✨" },
-      { id: "l4", body: "正有这个想法。晚点我把完整版本发你看看。", mine: true, time: "10:28", status: "read", replyTo: "那个留白可以保留" },
-    ],
-  },
-  {
-    id: "zhou",
-    name: "周予安",
-    handle: "@yuan",
-    initials: "安",
-    color: "#7b9ad8",
-    online: true,
-    unread: 2,
-    lastSeen: "在线",
-    messages: [
-      { id: "z1", body: "周末的咖啡店订好了，还是靠窗的位置。", mine: false, time: "09:42" },
-      { id: "z2", body: "太好了，下午三点见？", mine: true, time: "09:45", status: "read" },
-      { id: "z3", body: "三点见，我提前十分钟到。", mine: false, time: "09:46" },
-    ],
-  },
-  {
-    id: "chen",
-    name: "陈默",
-    handle: "@chenmo",
-    initials: "默",
-    color: "#415d7d",
-    online: false,
-    unread: 0,
-    lastSeen: "2 小时前在线",
-    messages: [
-      { id: "c1", body: "会议纪要已经整理在共享文件夹。", mine: false, time: "昨天" },
-      { id: "c2", body: "收到，我下午过一遍。", mine: true, time: "昨天", status: "read" },
-    ],
-  },
-  {
-    id: "tang",
-    name: "唐小满",
-    handle: "@xiaoman",
-    initials: "满",
-    color: "#c886a8",
-    online: false,
-    muted: true,
-    unread: 0,
-    lastSeen: "昨天在线",
-    messages: [{ id: "t1", body: "照片原图我都放进相册啦。", mine: false, time: "周三" }],
-  },
-  {
-    id: "lu",
-    name: "陆屿",
-    handle: "@island",
-    initials: "屿",
-    color: "#8f86c3",
-    online: false,
-    unread: 0,
-    lastSeen: "3 天前在线",
-    messages: [{ id: "u1", body: "下次见面再慢慢聊。", mine: false, time: "周一" }],
-  },
-];
+const initialConversations: Conversation[] = [];
+const legacyDemoConversationIds = new Set(["lin", "zhou", "chen", "tang", "lu"]);
+
+function removeLegacyDemoConversations(conversations: Conversation[]) {
+  return conversations.filter((conversation) => !legacyDemoConversationIds.has(conversation.id));
+}
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
 function LoginScreen({ initialized, onLogin, onSetup }: {
@@ -225,7 +161,7 @@ export default function ChatApp() {
   const [creatingUser, setCreatingUser] = useState(false);
   const [activeView, setActiveView] = useState<MainView>("messages");
   const [conversations, setConversations] = useState(initialConversations);
-  const [activeId, setActiveId] = useState("lin");
+  const [activeId, setActiveId] = useState("");
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -307,20 +243,26 @@ export default function ChatApp() {
         const remote = await fetchEncryptedRecord(recordName);
         if (cancelled) return;
         if (remote) {
-          setConversations(await decryptRemoteRecord<Conversation[]>(currentUser.username, recordName, remote));
+          const storedConversations = await decryptRemoteRecord<Conversation[]>(currentUser.username, recordName, remote);
+          const cleanedConversations = removeLegacyDemoConversations(storedConversations);
+          setConversations(cleanedConversations);
+          setActiveId(cleanedConversations[0]?.id ?? "");
           window.localStorage.removeItem("milo-conversations");
         } else {
           const encryptedLocal = await loadEncryptedRecord<Conversation[]>(recordName)
             ?? (currentUser.role === "admin" ? await loadEncryptedRecord<Conversation[]>("conversations") : null);
           const legacy = currentUser.role === "admin" ? window.localStorage.getItem("milo-conversations") : null;
-          const migrated = encryptedLocal ?? (legacy ? JSON.parse(legacy) as Conversation[] : null);
+          const storedConversations = encryptedLocal ?? (legacy ? JSON.parse(legacy) as Conversation[] : null);
+          const migrated = storedConversations ? removeLegacyDemoConversations(storedConversations) : null;
           if (migrated) {
             await saveEncryptedRecordRemote(recordName, await encryptRemoteRecord(currentUser.username, recordName, migrated));
             if (cancelled) return;
             setConversations(migrated);
+            setActiveId(migrated[0]?.id ?? "");
             window.localStorage.removeItem("milo-conversations");
           } else {
             setConversations(initialConversations);
+            setActiveId("");
           }
         }
         setHydrated(true);
@@ -410,14 +352,15 @@ export default function ChatApp() {
   const unreadTotal = notificationConversations.reduce((total, item) => total + item.unread, 0);
 
   const displayedMessages = useMemo(() => {
+    if (!active) return [];
     const normalized = messageQuery.trim().toLowerCase();
     if (!normalized) return active.messages;
     return active.messages.filter((message) =>
       `${message.body} ${message.attachment?.name ?? ""}`.toLowerCase().includes(normalized),
     );
-  }, [active.messages, messageQuery]);
+  }, [active, messageQuery]);
 
-  const sharedMessages = active.messages.filter((message) => message.attachment);
+  const sharedMessages = active?.messages.filter((message) => message.attachment) ?? [];
   const contactMenuPerson = conversations.find((item) => item.id === contactMenuId);
   const selfInitial = (currentUser?.displayName || currentUser?.username || "A").slice(0, 1).toUpperCase();
 
@@ -613,6 +556,7 @@ export default function ChatApp() {
   }
 
   function archiveConversation() {
+    if (!active) return;
     const nextArchived = !active.archived;
     setConversations((items) => items.map((item) => item.id === activeId ? { ...item, archived: nextArchived } : item));
     const next = conversations.find((item) => item.id !== activeId && Boolean(item.archived) === showArchived);
@@ -638,7 +582,7 @@ export default function ChatApp() {
     const deletingId = deleteConversationId;
     const remaining = conversations.filter((item) => item.id !== deletingId);
     setConversations(remaining);
-    if (activeId === deletingId && remaining.length) setActiveId(remaining[0].id);
+    if (activeId === deletingId) setActiveId(remaining[0]?.id ?? "");
     setDeleteConversationId(null);
     setOpenSwipeId(null);
     setToast(deleteTargetKind === "contact" ? "联系人及本地聊天记录已删除" : "对话已删除");
@@ -955,7 +899,7 @@ export default function ChatApp() {
                 </div>
               );
             })}
-            {filtered.length === 0 && <div className="empty-search"><Search size={24} /><p>没有找到相关对话</p></div>}
+            {filtered.length === 0 && <div className="empty-search"><Search size={24} /><p>{query ? "没有找到相关对话" : "暂无对话"}</p></div>}
           </div>
           <button className="archive-link" onClick={() => setShowArchived((value) => !value)}><Archive size={16} /> {showArchived ? "返回最近对话" : "已归档的对话"}</button>
         </>}
@@ -981,7 +925,7 @@ export default function ChatApp() {
                 </button>
               </div>;
             })}
-            {filteredContacts.length === 0 && <div className="empty-search"><UsersRound size={24} /><p>没有找到相关联系人</p></div>}
+            {filteredContacts.length === 0 && <div className="empty-search"><UsersRound size={24} /><p>{query ? "没有找到相关联系人" : "暂无联系人"}</p></div>}
           </div>
         </>}
 
@@ -1001,6 +945,7 @@ export default function ChatApp() {
       </section>
 
       <section className={`chat-panel ${mobileChatOpen ? "mobile-open" : ""}`}>
+        {active ? <>
         <header className="chat-header">
           <button
             className="mobile-back"
@@ -1107,9 +1052,17 @@ export default function ChatApp() {
             {emojiOpen && <div className="emoji-picker">{emojis.map((emoji) => <button type="button" key={emoji} onClick={() => setDraft((value) => value + emoji)}>{emoji}</button>)}</div>}
           </form>
         </div>
+        </> : (
+          <div className="empty-chat-state">
+            <span><MessageCircleMore size={32} /></span>
+            <strong>暂无对话</strong>
+            <p>输入完整用户名，开始一段新对话</p>
+            <button onClick={() => setNewChatOpen(true)}><Plus size={17} /> 新建对话</button>
+          </div>
+        )}
       </section>
 
-      {detailsOpen && (
+      {detailsOpen && active && (
         <aside className="details-panel">
           <button className="details-close" onClick={() => setDetailsOpen(false)} aria-label="关闭详情"><X size={18} /></button>
           <Avatar person={active} size="lg" />
@@ -1134,7 +1087,7 @@ export default function ChatApp() {
         </aside>
       )}
 
-      {callMode && (
+      {callMode && active && (
         <div className="modal-backdrop call-backdrop">
           <section className="call-card">
             <Avatar person={active} size="lg" />
@@ -1147,7 +1100,7 @@ export default function ChatApp() {
         </div>
       )}
 
-      {profileOpen && (
+      {profileOpen && active && (
         <div className="modal-backdrop" onMouseDown={() => setProfileOpen(false)}>
           <section className="info-modal" onMouseDown={(event) => event.stopPropagation()}>
             <button className="modal-x" onClick={() => setProfileOpen(false)}><X size={17} /></button>
@@ -1158,7 +1111,7 @@ export default function ChatApp() {
         </div>
       )}
 
-      {sharedOpen && (
+      {sharedOpen && active && (
         <div className="modal-backdrop" onMouseDown={() => setSharedOpen(false)}>
           <section className="shared-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><p className="eyebrow">SHARED</p><h2>共享内容</h2></div><button onClick={() => setSharedOpen(false)}><X size={18} /></button></div>

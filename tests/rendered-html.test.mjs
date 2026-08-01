@@ -65,6 +65,11 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /HTTP 测试模式：已登录/);
   assert.match(chatApp, /conversations:\$\{currentUser\.username\}/);
   assert.match(chatApp, /currentUser\?\.role === "admin"/);
+  assert.match(chatApp, /const initialConversations: Conversation\[\] = \[\];/);
+  assert.match(chatApp, /removeLegacyDemoConversations/);
+  assert.match(chatApp, /暂无对话/);
+  assert.match(chatApp, /暂无联系人/);
+  assert.doesNotMatch(chatApp, /林知夏|周予安|陈默|唐小满|陆屿|@zhixia|@xiaoman/);
   assert.match(dockerfile, /HEALTHCHECK/);
   assert.match(dockerfile, /\/api\/health/);
   assert.match(dockerfile, /--hostname", "0\.0\.0\.0"/);
