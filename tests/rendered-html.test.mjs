@@ -66,6 +66,9 @@ test("keeps database, encrypted storage, auth, and deployment wiring", async () 
   assert.match(readme, /MONGO_APP_PASSWORD=\$MONGO_APP_PASSWORD/);
   assert.match(readme, /-p 127\.0\.0\.1:3000:3000/);
   assert.match(readme, /docker run -d/);
+  assert.match(readme, /## 后续更新 Docker Run/);
+  assert.match(readme, /--pull=always/);
+  assert.match(readme, /docker rm -f milo-app/);
   assert.match(readme, /milo-mongo-data:\/data\/db/);
   assert.match(readme, /# Docker Run 部署/);
   assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);

@@ -60,6 +60,7 @@ docker volume create milo-mongo-data
 
 ```bash
 docker run -d \
+  --pull=always \
   --name milo-mongo \
   --restart unless-stopped \
   --network milo-network \
@@ -72,6 +73,7 @@ docker run -d \
 
 ```bash
 docker run -d \
+  --pull=always \
   --name milo-app \
   --restart unless-stopped \
   --network milo-network \
@@ -85,3 +87,22 @@ docker run -d \
 ```text
 http://127.0.0.1:3000
 ```
+
+## 后续更新 Docker Run
+
+GitHub 最新镜像生成完成后，执行：
+
+```bash
+docker rm -f milo-app
+
+docker run -d \
+  --pull=always \
+  --name milo-app \
+  --restart unless-stopped \
+  --network milo-network \
+  --env-file ~/milo/.env.app \
+  -p 127.0.0.1:3000:3000 \
+  ghcr.io/colaxr/milo:latest
+```
+
+数据库容器和 `milo-mongo-data` 数据卷不需要删除。
