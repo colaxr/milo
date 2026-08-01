@@ -26,7 +26,7 @@ test("server-renders the Milo application shell", async () => {
 });
 
 test("keeps SQLite, encrypted storage, auth, and single-container deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, dockerfile, workflow, readme, packageJson] = await Promise.all([
+  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, dockerfile, workflow, readme, packageJson, layout] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
@@ -37,6 +37,7 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
     readFile(new URL("../.github/workflows/publish-images.yml", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(secureStorage, /AES-GCM/);
@@ -91,6 +92,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(readme, /创建首个管理员账户/);
   assert.doesNotMatch(readme, /MongoDB|milo-mongo|MONGO_|openssl/);
   assert.doesNotMatch(packageJson, /"mongodb"/);
+  assert.match(layout, /viewportFit: "cover"/);
+  assert.match(layout, /userScalable: false/);
   assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);
   assert.doesNotMatch(readme, /git clone|git pull|docker build|docker pull/);
 });
