@@ -40,7 +40,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { createRemoteUser, fetchEncryptedRecord, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote } from "./api-client";
+import { createRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, setupRemote } from "./api-client";
 import { decryptRemoteRecord, encryptRemoteRecord, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
@@ -150,7 +150,11 @@ const initialConversations: Conversation[] = [
 ];
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
-function LoginScreen({ onLogin }: { onLogin: (username: string, password: string) => Promise<string | null> }) {
+function LoginScreen({ initialized, onLogin, onSetup }: {
+  initialized: boolean;
+  onLogin: (username: string, password: string) => Promise<string | null>;
+  onSetup: (username: string, password: string) => Promise<string | null>;
+}) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -160,7 +164,7 @@ function LoginScreen({ onLogin }: { onLogin: (username: string, password: string
   async function submitLogin(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
-    const loginError = await onLogin(username, password);
+    const loginError = await (initialized ? onLogin(username, password) : onSetup(username, password));
     setSubmitting(false);
     if (loginError) setError(loginError);
   }
@@ -173,18 +177,18 @@ function LoginScreen({ onLogin }: { onLogin: (username: string, password: string
       <section className="login-form-side">
         <form className="login-card" onSubmit={submitLogin}>
           <div className="cloud-card-icon"><Cloud size={25} /></div>
-          <h2>登录云盘</h2>
-          <p className="login-intro">安全访问并管理您的文件</p>
+          <h2>{initialized ? "登录云盘" : "首次设置"}</h2>
+          <p className="login-intro">{initialized ? "安全访问并管理您的文件" : "创建管理员账户后即可使用"}</p>
           <label className="login-field">
             <span>账户名</span>
             <div><CircleUserRound size={18} /><input value={username} onChange={(event) => { setUsername(event.target.value); setError(""); }} autoComplete="username" placeholder="输入账户名" autoFocus /></div>
           </label>
           <label className="login-field">
             <span>密码</span>
-            <div><LockKeyhole size={18} /><input value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} type={showPassword ? "text" : "password"} autoComplete="current-password" placeholder="输入密码" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "隐藏密码" : "显示密码"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
+            <div><LockKeyhole size={18} /><input value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} type={showPassword ? "text" : "password"} autoComplete={initialized ? "current-password" : "new-password"} placeholder={initialized ? "输入密码" : "设置至少 12 位密码"} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "隐藏密码" : "显示密码"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
           </label>
           <div className={`login-error ${error ? "visible" : ""}`} role="alert">{error || "占位"}</div>
-          <button className="login-submit" disabled={submitting}>{submitting ? "正在验证…" : "登录"}</button>
+          <button className="login-submit" disabled={submitting}>{submitting ? "正在验证…" : initialized ? "登录" : "创建管理员账户"}</button>
         </form>
       </section>
       <footer className="cloud-footer"><span>© 2026 青屿云盘</span><span>隐私 · 条款 · 安全</span></footer>
@@ -208,6 +212,7 @@ function SelfAvatarContent({ avatar, size, fallback }: { avatar: string | null; 
 export default function ChatApp() {
   const [authenticated, setAuthenticated] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
+  const [serverInitialized, setServerInitialized] = useState(true);
   const [accountOpen, setAccountOpen] = useState(false);
   const [selfAvatar, setSelfAvatar] = useState<string | null>(null);
   const [users, setUsers] = useState<LocalUser[]>([]);
@@ -263,6 +268,10 @@ export default function ChatApp() {
     let cancelled = false;
     void (async () => {
       try {
+        const initialized = await fetchInitializationStatus();
+        if (cancelled) return;
+        setServerInitialized(initialized);
+        if (!initialized) return;
         const sessionUser = await fetchSession();
         if (cancelled) return;
         if (sessionUser && await hasRemoteVaultKey(sessionUser.username)) {
@@ -744,6 +753,29 @@ export default function ChatApp() {
     }
   }
 
+  async function setup(username: string, password: string): Promise<string | null> {
+    try {
+      const normalized = normalizeUsername(username);
+      const user = await setupRemote(normalized, password);
+      await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
+      setUsers([user]);
+      setHydrated(false);
+      setSecureStorageReady(false);
+      setCurrentUser(user);
+      setServerInitialized(true);
+      setAuthenticated(true);
+      return null;
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid username") return "账户名需为 3–32 位字母、数字或 ._-";
+      if (error instanceof Error && error.message === "weak password") return "密码至少需要 12 位";
+      if (error instanceof Error && error.message === "already initialized") {
+        setServerInitialized(true);
+        return "管理员账户已经创建，请直接登录";
+      }
+      return "服务器暂时不可用，请稍后重试";
+    }
+  }
+
   function logout() {
     if (currentUser) void lockRemoteVault(currentUser.username);
     void logoutRemote();
@@ -845,7 +877,7 @@ export default function ChatApp() {
   }
 
   if (!authenticated) {
-    return <LoginScreen onLogin={login} />;
+    return <LoginScreen initialized={serverInitialized} onLogin={login} onSetup={setup} />;
   }
 
   return (
@@ -1179,7 +1211,7 @@ export default function ChatApp() {
               <div className="user-form-grid">
                 <label><span>用户名</span><input value={newUsername} onChange={(event) => { setNewUsername(event.target.value); setUserFormError(""); }} placeholder="例如 zhangsan" autoComplete="off" /></label>
                 <label><span>显示名称</span><input value={newDisplayName} onChange={(event) => setNewDisplayName(event.target.value)} placeholder="例如 张三" autoComplete="off" /></label>
-                <label className="password-field"><span>初始密码</span><input value={newUserPassword} onChange={(event) => { setNewUserPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="至少 8 位" autoComplete="new-password" /></label>
+                <label className="password-field"><span>初始密码</span><input value={newUserPassword} onChange={(event) => { setNewUserPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="至少 12 位" autoComplete="new-password" /></label>
               </div>
               <p className={`user-form-error ${userFormError ? "visible" : ""}`}>{userFormError || "用户创建后即可从登录页登录"}</p>
               <button className="create-user-button" disabled={creatingUser}>{creatingUser ? "正在创建…" : "创建用户"}</button>

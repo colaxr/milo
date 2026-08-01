@@ -1,4 +1,4 @@
-name: Publish container images
+name: Publish container image
 
 on:
   push:
@@ -7,8 +7,6 @@ on:
     paths-ignore:
       - README.md
       - tests/**
-      - .env.app.example
-      - .env.mongo.example
   workflow_dispatch:
 
 permissions:
@@ -16,24 +14,13 @@ permissions:
   packages: write
 
 concurrency:
-  group: container-images-${{ github.ref }}
+  group: container-image-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   publish:
-    name: Publish ${{ matrix.name }} image
+    name: Publish application image
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: app
-            dockerfile: Dockerfile
-            image: ghcr.io/${{ github.repository }}
-          - name: mongo
-            dockerfile: Dockerfile.mongo
-            image: ghcr.io/${{ github.repository_owner }}/milo-mongo
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v7.0.1
@@ -55,24 +42,23 @@ jobs:
         id: metadata
         uses: docker/metadata-action@v6.2.0
         with:
-          images: ${{ matrix.image }}
+          images: ghcr.io/${{ github.repository }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-
-            type=raw,value=8.0.28,enable=${{ matrix.name == 'mongo' }}
 
       - name: Build and publish image
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
           provenance: mode=max
           sbom: true

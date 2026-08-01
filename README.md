@@ -3,84 +3,22 @@
 ## 环境要求
 
 - Docker 24 或更高版本
-- OpenSSL
-- 建议至少 2 GB 内存和 20 GB 可用磁盘
+- 可用端口 `3000`
 - 已配置 HTTPS 反向代理，可转发到 `127.0.0.1:3000`
 
-## 生成配置
-
-```bash
-mkdir -p ~/milo
-cd ~/milo
-umask 077
-
-MONGO_ROOT_PASSWORD="$(openssl rand -hex 32)"
-MONGO_APP_PASSWORD="$(openssl rand -hex 32)"
-ADMIN_PASSWORD="$(openssl rand -hex 32)"
-
-printf '%s\n' \
-  'MONGO_INITDB_ROOT_USERNAME=milo_root' \
-  "MONGO_INITDB_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD" \
-  'MONGO_INITDB_DATABASE=milo' \
-  'MONGO_APP_USERNAME=milo_app' \
-  "MONGO_APP_PASSWORD=$MONGO_APP_PASSWORD" \
-  > .env.mongo
-
-printf '%s\n' \
-  'MONGO_HOST=milo-mongo' \
-  'MONGO_PORT=27017' \
-  'MONGO_DATABASE=milo' \
-  'MONGO_USERNAME=milo_app' \
-  "MONGO_PASSWORD=$MONGO_APP_PASSWORD" \
-  'ADMIN_USERNAME=admin' \
-  'ADMIN_DISPLAY_NAME=ADMIN' \
-  "ADMIN_PASSWORD=$ADMIN_PASSWORD" \
-  'SESSION_TTL_DAYS=30' \
-  'SESSION_COOKIE_SECURE=true' \
-  > .env.app
-
-chmod 600 .env.mongo .env.app
-unset MONGO_ROOT_PASSWORD MONGO_APP_PASSWORD ADMIN_PASSWORD
-```
-
-查看首次登录密码：
-
-```bash
-grep '^ADMIN_PASSWORD=' .env.app
-```
-
-## 创建 Docker 网络和数据卷
-
-```bash
-docker network create milo-network
-docker volume create milo-mongo-data
-```
-
-## Docker Run 数据库
+## 首次部署
 
 ```bash
 docker run -d \
   --pull=always \
-  --name milo-mongo \
+  --name milo \
   --restart unless-stopped \
-  --network milo-network \
-  --env-file ~/milo/.env.mongo \
-  -v milo-mongo-data:/data/db \
-  ghcr.io/colaxr/milo-mongo:8.0.28
-```
-
-## Docker Run 应用
-
-```bash
-docker run -d \
-  --pull=always \
-  --name milo-app \
-  --restart unless-stopped \
-  --network milo-network \
-  --env-file ~/milo/.env.app \
   -p 127.0.0.1:3000:3000 \
+  -v milo-data:/app/data \
   ghcr.io/colaxr/milo:latest
 ```
+
+部署完成后，通过 HTTPS 打开页面并创建首个管理员账户。
 
 反向代理上游地址：
 
@@ -88,55 +26,18 @@ docker run -d \
 http://127.0.0.1:3000
 ```
 
-## 后续更新 Docker Run
-
-GitHub 最新镜像生成完成后，执行：
+## 后续更新
 
 ```bash
-docker rm -f milo-app
+docker rm -f milo
 
 docker run -d \
   --pull=always \
-  --name milo-app \
+  --name milo \
   --restart unless-stopped \
-  --network milo-network \
-  --env-file ~/milo/.env.app \
   -p 127.0.0.1:3000:3000 \
+  -v milo-data:/app/data \
   ghcr.io/colaxr/milo:latest
 ```
 
-数据库容器和 `milo-mongo-data` 数据卷不需要删除。
-
-## 后续更新数据库 Docker Run
-
-GitHub 数据库镜像更新完成后，先停止应用写入，再重建数据库容器：
-
-```bash
-docker rm -f milo-app
-docker stop --time 60 milo-mongo
-docker rm milo-mongo
-
-docker run -d \
-  --pull=always \
-  --name milo-mongo \
-  --restart unless-stopped \
-  --network milo-network \
-  --env-file ~/milo/.env.mongo \
-  -v milo-mongo-data:/data/db \
-  ghcr.io/colaxr/milo-mongo:8.0.28
-
-until [ "$(docker inspect --format='{{.State.Health.Status}}' milo-mongo)" = "healthy" ]; do
-  sleep 2
-done
-
-docker run -d \
-  --pull=always \
-  --name milo-app \
-  --restart unless-stopped \
-  --network milo-network \
-  --env-file ~/milo/.env.app \
-  -p 127.0.0.1:3000:3000 \
-  ghcr.io/colaxr/milo:latest
-```
-
-不要删除 `milo-mongo-data` 数据卷；新数据库容器会继续使用原数据。若 README 中的 MongoDB 镜像版本号发生变化，以最新版本号为准，不要降级数据库版本。
+不要删除 `milo-data` 数据卷；账户和记录会继续保留。

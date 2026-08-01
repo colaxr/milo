@@ -16,10 +16,7 @@ export async function POST(request: Request): Promise<Response> {
       { user: toPublicUser(user) },
       { headers: { "set-cookie": sessionCookie(session.token, session.expiresAt) } },
     );
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("ADMIN_PASSWORD")) {
-      return apiError("server is not initialized", 503);
-    }
+  } catch {
     return apiError("login unavailable", 503);
   }
 }

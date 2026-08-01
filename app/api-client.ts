@@ -21,6 +21,17 @@ export async function fetchSession(): Promise<LocalUser | null> {
   }
 }
 
+export async function fetchInitializationStatus(): Promise<boolean> {
+  return (await api<{ initialized: boolean }>("/api/auth/status")).initialized;
+}
+
+export async function setupRemote(username: string, password: string): Promise<LocalUser> {
+  return (await api<{ user: LocalUser }>("/api/auth/setup", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  })).user;
+}
+
 export async function loginRemote(username: string, password: string): Promise<LocalUser> {
   return (await api<{ user: LocalUser }>("/api/auth/login", {
     method: "POST",

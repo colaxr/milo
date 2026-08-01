@@ -20,23 +20,23 @@ test("server-renders the Milo application shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Milo 私信<\/title>/i);
-  assert.match(html, /正在准备 Milo/);
+  assert.match(html, /<title>Milo/);
   assert.match(html, /class="session-loading"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 
-test("keeps database, encrypted storage, auth, and deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, mongo, recordsRoute, dockerfile, mongoDockerfile, workflow, readme] = await Promise.all([
+test("keeps SQLite, encrypted storage, auth, and single-container deployment wiring", async () => {
+  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, dockerfile, workflow, readme, packageJson] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
-    readFile(new URL("../server/mongodb.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/sqlite.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/records/[name]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/auth/setup/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
-    readFile(new URL("../Dockerfile.mongo", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/publish-images.yml", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(secureStorage, /AES-GCM/);
@@ -45,37 +45,41 @@ test("keeps database, encrypted storage, auth, and deployment wiring", async () 
   assert.match(auth, /scrypt/);
   assert.match(auth, /timingSafeEqual/);
   assert.match(auth, /HttpOnly; SameSite=Strict/);
-  assert.match(mongo, /MongoClient/);
-  assert.match(mongo, /retryWrites: true/);
-  assert.match(mongo, /expireAfterSeconds: 0/);
+  assert.match(auth, /BEGIN IMMEDIATE/);
+  assert.match(sqlite, /DatabaseSync/);
+  assert.match(sqlite, /PRAGMA journal_mode = WAL/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS users/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS sessions/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS records/);
+  assert.match(sqlite, /idx_sessions_expires_at/);
+  assert.match(sqlite, /PRAGMA optimize/);
   assert.match(recordsRoute, /ciphertext/);
-  assert.match(recordsRoute, /username: user\.username/);
+  assert.match(recordsRoute, /ON CONFLICT\(username, name\) DO UPDATE/);
+  assert.match(setupRoute, /createFirstAdmin/);
+  assert.match(setupRoute, /sessionCookie/);
+  assert.match(chatApp, /fetchInitializationStatus/);
+  assert.match(chatApp, /setupRemote/);
   assert.match(chatApp, /conversations:\$\{currentUser\.username\}/);
   assert.match(chatApp, /currentUser\?\.role === "admin"/);
   assert.match(dockerfile, /HEALTHCHECK/);
   assert.match(dockerfile, /\/api\/health/);
   assert.match(dockerfile, /--hostname", "0\.0\.0\.0"/);
-  assert.match(mongoDockerfile, /mongo:8\.0\.28-noble/);
+  assert.match(dockerfile, /SQLITE_PATH=\/app\/data\/milo\.db/);
+  assert.match(dockerfile, /VOLUME \["\/app\/data"\]/);
+  assert.match(dockerfile, /USER node/);
   assert.match(workflow, /packages: write/);
   assert.match(workflow, /linux\/amd64,linux\/arm64/);
   assert.match(workflow, /ghcr\.io\/\$\{\{ github\.repository \}\}/);
-  assert.match(workflow, /ghcr\.io\/\$\{\{ github\.repository_owner \}\}\/milo-mongo/);
+  assert.doesNotMatch(workflow, /milo-mongo|Dockerfile\.mongo/);
   assert.match(readme, /ghcr\.io\/colaxr\/milo:latest/);
-  assert.match(readme, /ghcr\.io\/colaxr\/milo-mongo:8\.0\.28/);
-  assert.match(readme, /openssl rand -hex 32/);
-  assert.match(readme, /MONGO_APP_PASSWORD=\$MONGO_APP_PASSWORD/);
   assert.match(readme, /-p 127\.0\.0\.1:3000:3000/);
   assert.match(readme, /docker run -d/);
-  assert.match(readme, /## 后续更新 Docker Run/);
   assert.match(readme, /--pull=always/);
-  assert.match(readme, /docker rm -f milo-app/);
-  assert.match(readme, /## 后续更新数据库 Docker Run/);
-  assert.match(readme, /docker stop --time 60 milo-mongo/);
-  assert.match(readme, /State\.Health\.Status/);
-  assert.match(readme, /不要删除 `milo-mongo-data` 数据卷/);
-  assert.match(readme, /milo-mongo-data:\/data\/db/);
-  assert.match(readme, /# Docker Run 部署/);
+  assert.match(readme, /docker rm -f milo/);
+  assert.match(readme, /milo-data:\/app\/data/);
+  assert.match(readme, /创建首个管理员账户/);
+  assert.doesNotMatch(readme, /MongoDB|milo-mongo|MONGO_|openssl/);
+  assert.doesNotMatch(packageJson, /"mongodb"/);
   assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);
-  assert.doesNotMatch(readme, /git clone|git pull|docker build|docker pull|mongodump|mongorestore|回退|更新应用|删除容器/);
-  assert.doesNotMatch(readme, /当前能力|功能|私信|端到端加密|管理员账户/);
+  assert.doesNotMatch(readme, /git clone|git pull|docker build|docker pull/);
 });
