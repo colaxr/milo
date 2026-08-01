@@ -111,21 +111,15 @@ async function readRemoteKey(username: string): Promise<CryptoKey | undefined> {
   return requestResult(transaction.objectStore(KEY_STORE).get(remoteKeyName(username)));
 }
 
-export async function hasRemoteVaultKey(username: string): Promise<boolean> {
-  return Boolean(await readRemoteKey(username));
+export function canUseDeviceEncryption(): boolean {
+  return window.isSecureContext
+    && Boolean(window.crypto?.subtle)
+    && Boolean(window.indexedDB);
 }
 
-export async function unlockRemoteVault(username: string, password: string, salt: string, iterations: number): Promise<void> {
-  const material = await window.crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-  const key = await window.crypto.subtle.deriveKey(
-    { name: "PBKDF2", hash: "SHA-256", salt: base64ToBytes(salt), iterations },
-    material,
+export async function ensureDeviceVaultKey(username: string): Promise<void> {
+  if (await readRemoteKey(username)) return;
+  const key = await window.crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
     false,
     ["encrypt", "decrypt"],
@@ -133,13 +127,6 @@ export async function unlockRemoteVault(username: string, password: string, salt
   const database = await openDatabase();
   const transaction = database.transaction(KEY_STORE, "readwrite");
   transaction.objectStore(KEY_STORE).put(key, remoteKeyName(username));
-  await transactionComplete(transaction);
-}
-
-export async function lockRemoteVault(username: string): Promise<void> {
-  const database = await openDatabase();
-  const transaction = database.transaction(KEY_STORE, "readwrite");
-  transaction.objectStore(KEY_STORE).delete(remoteKeyName(username));
   await transactionComplete(transaction);
 }
 
