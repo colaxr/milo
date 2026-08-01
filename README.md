@@ -29,11 +29,12 @@ chmod 600 .env.mongo .env.app
 - `.env.mongo` 的 `MONGO_APP_PASSWORD` 必须与 `.env.app` 的 `MONGO_PASSWORD` 相同
 - 将 `Caddyfile` 中的 `chat.example.com` 替换为实际域名
 
-## 构建镜像
+## 拉取镜像
 
 ```bash
-docker build -t milo-app:latest .
-docker build -f Dockerfile.mongo -t milo-mongo:8.0.28 .
+docker pull ghcr.io/colaxr/milo:latest
+docker pull ghcr.io/colaxr/milo-mongo:8.0.28
+docker pull caddy:2.11.4-alpine
 ```
 
 ## 创建网络和数据卷
@@ -56,7 +57,7 @@ docker run -d \
   --network milo-network \
   --env-file .env.mongo \
   -v milo-mongo-data:/data/db \
-  milo-mongo:8.0.28
+  ghcr.io/colaxr/milo-mongo:8.0.28
 ```
 
 等待数据库状态变为 `healthy`：
@@ -73,7 +74,7 @@ docker run -d \
   --restart unless-stopped \
   --network milo-network \
   --env-file .env.app \
-  milo-app:latest
+  ghcr.io/colaxr/milo:latest
 ```
 
 ## 启动 HTTPS 入口
@@ -133,14 +134,14 @@ docker start milo-app
 
 ```bash
 git pull
-docker build -t milo-app:latest .
+docker pull ghcr.io/colaxr/milo:latest
 docker rm -f milo-app
 docker run -d \
   --name milo-app \
   --restart unless-stopped \
   --network milo-network \
   --env-file .env.app \
-  milo-app:latest
+  ghcr.io/colaxr/milo:latest
 ```
 
 ## 更新数据库镜像
@@ -149,7 +150,7 @@ docker run -d \
 
 ```bash
 git pull
-docker build -f Dockerfile.mongo -t milo-mongo:8.0.28 .
+docker pull ghcr.io/colaxr/milo-mongo:8.0.28
 docker rm -f milo-mongo
 docker run -d \
   --name milo-mongo \
@@ -157,7 +158,7 @@ docker run -d \
   --network milo-network \
   --env-file .env.mongo \
   -v milo-mongo-data:/data/db \
-  milo-mongo:8.0.28
+  ghcr.io/colaxr/milo-mongo:8.0.28
 ```
 
 ## 停止容器
