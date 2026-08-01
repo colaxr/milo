@@ -41,7 +41,7 @@ import {
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, setupRemote } from "./api-client";
-import { decryptRemoteRecord, encryptRemoteRecord, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault } from "./secure-storage";
+import { canUseDeviceEncryption, decryptRemoteRecord, encryptRemoteRecord, loadEncryptedRecord, prepareDeviceVault } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
 type Message = {
@@ -150,6 +150,19 @@ const initialConversations: Conversation[] = [
 ];
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
+
+async function prepareUserDeviceVault(user: LocalUser, password?: string): Promise<void> {
+  const recordName = `conversations:${user.username}`;
+  const remote = await fetchEncryptedRecord(recordName);
+  await prepareDeviceVault<Conversation[]>(
+    user.username,
+    recordName,
+    remote,
+    (record) => saveEncryptedRecordRemote(recordName, record),
+    password ? { password, salt: user.vaultSalt, iterations: user.vaultIterations } : undefined,
+  );
+}
+
 function LoginScreen({ initialized, onLogin, onSetup }: {
   initialized: boolean;
   onLogin: (username: string, password: string) => Promise<string | null>;
@@ -252,6 +265,7 @@ export default function ChatApp() {
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [secureStorageReady, setSecureStorageReady] = useState(false);
+  const [deviceEncryptionEnabled, setDeviceEncryptionEnabled] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -274,7 +288,10 @@ export default function ChatApp() {
         if (!initialized) return;
         const sessionUser = await fetchSession();
         if (cancelled) return;
-        if (sessionUser && await hasRemoteVaultKey(sessionUser.username)) {
+        if (sessionUser) {
+          const encryptionEnabled = canUseDeviceEncryption();
+          if (encryptionEnabled) await prepareUserDeviceVault(sessionUser);
+          setDeviceEncryptionEnabled(encryptionEnabled);
           setCurrentUser(sessionUser);
           setAuthenticated(true);
           if (sessionUser.role === "admin") setUsers(await fetchUsers());
@@ -282,8 +299,7 @@ export default function ChatApp() {
           const avatar = window.localStorage.getItem(avatarKey) ?? (sessionUser.role === "admin" ? window.localStorage.getItem("milo-self-avatar") : null);
           if (avatar && !window.localStorage.getItem(avatarKey)) window.localStorage.setItem(avatarKey, avatar);
           setSelfAvatar(avatar);
-        } else if (sessionUser) {
-          await logoutRemote();
+          if (!encryptionEnabled) setToast("HTTP 测试模式：登录成功，加密记录已暂停");
         }
       } catch {
         setToast("服务器暂时不可用");
@@ -295,7 +311,7 @@ export default function ChatApp() {
   }, []);
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !deviceEncryptionEnabled) return;
     let cancelled = false;
     const recordName = `conversations:${currentUser.username}`;
     void (async () => {
@@ -326,10 +342,10 @@ export default function ChatApp() {
       }
     })();
     return () => { cancelled = true; };
-  }, [currentUser]);
+  }, [currentUser, deviceEncryptionEnabled]);
 
   useEffect(() => {
-    if (!hydrated || !currentUser) return;
+    if (!hydrated || !currentUser || !deviceEncryptionEnabled) return;
     const version = storageWriteVersionRef.current + 1;
     storageWriteVersionRef.current = version;
     const recordName = `conversations:${currentUser.username}`;
@@ -337,7 +353,7 @@ export default function ChatApp() {
       .then((payload) => saveEncryptedRecordRemote(recordName, payload)).catch(() => {
       if (storageWriteVersionRef.current === version) setToast("加密消息记录保存失败");
     });
-  }, [conversations, currentUser, hydrated]);
+  }, [conversations, currentUser, deviceEncryptionEnabled, hydrated]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -739,13 +755,16 @@ export default function ChatApp() {
   async function login(username: string, password: string): Promise<string | null> {
     try {
       const user = await loginRemote(normalizeUsername(username), password);
-      await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
+      const encryptionEnabled = canUseDeviceEncryption();
+      if (encryptionEnabled) await prepareUserDeviceVault(user, password);
       setUsers(user.role === "admin" ? await fetchUsers() : []);
       setHydrated(false);
       setSecureStorageReady(false);
+      setDeviceEncryptionEnabled(encryptionEnabled);
       setCurrentUser(user);
       setAuthenticated(true);
       setSelfAvatar(window.localStorage.getItem(`milo-self-avatar:${user.username}`));
+      if (!encryptionEnabled) setToast("HTTP 测试模式：登录成功，加密记录已暂停");
       return null;
     } catch (error) {
       if (error instanceof Error && error.message === "invalid credentials") return "账户名或密码不正确";
@@ -757,13 +776,16 @@ export default function ChatApp() {
     try {
       const normalized = normalizeUsername(username);
       const user = await setupRemote(normalized, password);
-      await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
+      const encryptionEnabled = canUseDeviceEncryption();
+      if (encryptionEnabled) await prepareUserDeviceVault(user, password);
       setUsers([user]);
       setHydrated(false);
       setSecureStorageReady(false);
+      setDeviceEncryptionEnabled(encryptionEnabled);
       setCurrentUser(user);
       setServerInitialized(true);
       setAuthenticated(true);
+      if (!encryptionEnabled) setToast("HTTP 测试模式：账户已创建，加密记录已暂停");
       return null;
     } catch (error) {
       if (error instanceof Error && error.message === "invalid username") return "账户名需为 3–32 位字母、数字或 ._-";
@@ -777,12 +799,12 @@ export default function ChatApp() {
   }
 
   function logout() {
-    if (currentUser) void lockRemoteVault(currentUser.username);
     void logoutRemote();
     setAccountOpen(false);
     setUserManagerOpen(false);
     setHydrated(false);
     setSecureStorageReady(false);
+    setDeviceEncryptionEnabled(false);
     setCurrentUser(null);
     setSelfAvatar(null);
     setAuthenticated(false);
@@ -882,6 +904,7 @@ export default function ChatApp() {
 
   return (
     <main className="app-shell">
+      {!deviceEncryptionEnabled && <div className="http-test-banner">HTTP 测试模式：已登录，加密记录将在 HTTPS 下启用</div>}
       <aside className="rail" aria-label="主导航">
         <div className="brand-mark">M</div>
         <nav>
