@@ -69,6 +69,10 @@ test("keeps database, encrypted storage, auth, and deployment wiring", async () 
   assert.match(readme, /## 后续更新 Docker Run/);
   assert.match(readme, /--pull=always/);
   assert.match(readme, /docker rm -f milo-app/);
+  assert.match(readme, /## 后续更新数据库 Docker Run/);
+  assert.match(readme, /docker stop --time 60 milo-mongo/);
+  assert.match(readme, /State\.Health\.Status/);
+  assert.match(readme, /不要删除 `milo-mongo-data` 数据卷/);
   assert.match(readme, /milo-mongo-data:\/data\/db/);
   assert.match(readme, /# Docker Run 部署/);
   assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);

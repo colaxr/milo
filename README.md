@@ -106,3 +106,37 @@ docker run -d \
 ```
 
 数据库容器和 `milo-mongo-data` 数据卷不需要删除。
+
+## 后续更新数据库 Docker Run
+
+GitHub 数据库镜像更新完成后，先停止应用写入，再重建数据库容器：
+
+```bash
+docker rm -f milo-app
+docker stop --time 60 milo-mongo
+docker rm milo-mongo
+
+docker run -d \
+  --pull=always \
+  --name milo-mongo \
+  --restart unless-stopped \
+  --network milo-network \
+  --env-file ~/milo/.env.mongo \
+  -v milo-mongo-data:/data/db \
+  ghcr.io/colaxr/milo-mongo:8.0.28
+
+until [ "$(docker inspect --format='{{.State.Health.Status}}' milo-mongo)" = "healthy" ]; do
+  sleep 2
+done
+
+docker run -d \
+  --pull=always \
+  --name milo-app \
+  --restart unless-stopped \
+  --network milo-network \
+  --env-file ~/milo/.env.app \
+  -p 127.0.0.1:3000:3000 \
+  ghcr.io/colaxr/milo:latest
+```
+
+不要删除 `milo-mongo-data` 数据卷；新数据库容器会继续使用原数据。若 README 中的 MongoDB 镜像版本号发生变化，以最新版本号为准，不要降级数据库版本。
