@@ -3,8 +3,7 @@
 ## 环境要求
 
 - Docker 24 或更高版本
-- 已解析到 VPS 的域名
-- 开放 TCP `80` 和 `443`
+- 已配置可转发到 `127.0.0.1:3000` 的反向代理
 - 建议至少 2 GB 内存和 20 GB 可用磁盘
 
 ## 获取代码
@@ -19,7 +18,6 @@ cd milo
 ```bash
 cp .env.mongo.example .env.mongo
 cp .env.app.example .env.app
-cp Caddyfile.example Caddyfile
 chmod 600 .env.mongo .env.app
 ```
 
@@ -27,14 +25,12 @@ chmod 600 .env.mongo .env.app
 
 - 为三个密码分别设置长度至少 24 位的随机值
 - `.env.mongo` 的 `MONGO_APP_PASSWORD` 必须与 `.env.app` 的 `MONGO_PASSWORD` 相同
-- 将 `Caddyfile` 中的 `chat.example.com` 替换为实际域名
 
 ## 拉取镜像
 
 ```bash
 docker pull ghcr.io/colaxr/milo:latest
 docker pull ghcr.io/colaxr/milo-mongo:8.0.28
-docker pull caddy:2.11.4-alpine
 ```
 
 ## 创建网络和数据卷
@@ -42,8 +38,6 @@ docker pull caddy:2.11.4-alpine
 ```bash
 docker network create milo-network
 docker volume create milo-mongo-data
-docker volume create milo-caddy-data
-docker volume create milo-caddy-config
 ```
 
 重复执行时，如果网络或数据卷已经存在，可以忽略对应的已存在提示。
@@ -74,28 +68,14 @@ docker run -d \
   --restart unless-stopped \
   --network milo-network \
   --env-file .env.app \
+  -p 127.0.0.1:3000:3000 \
   ghcr.io/colaxr/milo:latest
 ```
 
-## 启动 HTTPS 入口
-
-```bash
-docker run -d \
-  --name milo-proxy \
-  --restart unless-stopped \
-  --network milo-network \
-  -p 80:80 \
-  -p 443:443 \
-  -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
-  -v milo-caddy-data:/data \
-  -v milo-caddy-config:/config \
-  caddy:2.11.4-alpine
-```
-
-部署完成后访问：
+反向代理上游地址：
 
 ```text
-https://<你的域名>
+http://127.0.0.1:3000
 ```
 
 ## 检查状态和日志
@@ -104,7 +84,6 @@ https://<你的域名>
 docker ps --filter name=milo
 docker logs --tail 100 milo-mongo
 docker logs --tail 100 milo-app
-docker logs --tail 100 milo-proxy
 ```
 
 ```bash
@@ -141,6 +120,7 @@ docker run -d \
   --restart unless-stopped \
   --network milo-network \
   --env-file .env.app \
+  -p 127.0.0.1:3000:3000 \
   ghcr.io/colaxr/milo:latest
 ```
 
@@ -164,13 +144,13 @@ docker run -d \
 ## 停止容器
 
 ```bash
-docker stop milo-proxy milo-app milo-mongo
+docker stop milo-app milo-mongo
 ```
 
 ## 删除容器
 
 ```bash
-docker rm -f milo-proxy milo-app milo-mongo
+docker rm -f milo-app milo-mongo
 ```
 
 删除容器不会删除 `milo-mongo-data` 数据卷。不要在没有有效备份时删除数据库数据卷。
