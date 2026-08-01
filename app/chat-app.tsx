@@ -40,8 +40,9 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { loadEncryptedRecord, saveEncryptedRecord } from "./secure-storage";
-import { createLocalUser, normalizeUsername, type LocalUser, verifyLocalPassword } from "./local-auth";
+import { createRemoteUser, fetchEncryptedRecord, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote } from "./api-client";
+import { decryptRemoteRecord, encryptRemoteRecord, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault } from "./secure-storage";
+import { normalizeUsername, type LocalUser } from "./local-auth";
 
 type Message = {
   id: string;
@@ -149,9 +150,6 @@ const initialConversations: Conversation[] = [
 ];
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
-const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "admin123";
-
 function LoginScreen({ onLogin }: { onLogin: (username: string, password: string) => Promise<string | null> }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -187,10 +185,6 @@ function LoginScreen({ onLogin }: { onLogin: (username: string, password: string
           </label>
           <div className={`login-error ${error ? "visible" : ""}`} role="alert">{error || "占位"}</div>
           <button className="login-submit" disabled={submitting}>{submitting ? "正在验证…" : "登录"}</button>
-          <div className="demo-credentials">
-            <ShieldCheck size={15} />
-            <div><strong>本地测试账户</strong><span>ADMIN / admin123</span></div>
-          </div>
         </form>
       </section>
       <footer className="cloud-footer"><span>© 2026 青屿云盘</span><span>隐私 · 条款 · 安全</span></footer>
@@ -269,26 +263,21 @@ export default function ChatApp() {
     let cancelled = false;
     void (async () => {
       try {
-        let storedUsers = await loadEncryptedRecord<LocalUser[]>("users");
-        if (!storedUsers?.length) {
-          storedUsers = [await createLocalUser(ADMIN_USERNAME, "ADMIN", ADMIN_PASSWORD, "admin")];
-          await saveEncryptedRecord("users", storedUsers);
-        }
+        const sessionUser = await fetchSession();
         if (cancelled) return;
-        setUsers(storedUsers);
-        const session = JSON.parse(window.localStorage.getItem("milo-session") ?? "null");
-        const sessionUser = storedUsers.find((user) => user.username === normalizeUsername(session?.username ?? ""));
-        if (sessionUser && (session?.version === 2 || session?.version === 3)) {
+        if (sessionUser && await hasRemoteVaultKey(sessionUser.username)) {
           setCurrentUser(sessionUser);
           setAuthenticated(true);
+          if (sessionUser.role === "admin") setUsers(await fetchUsers());
           const avatarKey = `milo-self-avatar:${sessionUser.username}`;
           const avatar = window.localStorage.getItem(avatarKey) ?? (sessionUser.role === "admin" ? window.localStorage.getItem("milo-self-avatar") : null);
           if (avatar && !window.localStorage.getItem(avatarKey)) window.localStorage.setItem(avatarKey, avatar);
           setSelfAvatar(avatar);
+        } else if (sessionUser) {
+          await logoutRemote();
         }
       } catch {
-        window.localStorage.removeItem("milo-session");
-        setToast("用户数据无法读取");
+        setToast("服务器暂时不可用");
       } finally {
         if (!cancelled) setSessionReady(true);
       }
@@ -302,17 +291,18 @@ export default function ChatApp() {
     const recordName = `conversations:${currentUser.username}`;
     void (async () => {
       try {
-        const encrypted = await loadEncryptedRecord<Conversation[]>(recordName)
-          ?? (currentUser.role === "admin" ? await loadEncryptedRecord<Conversation[]>("conversations") : null);
+        const remote = await fetchEncryptedRecord(recordName);
         if (cancelled) return;
-        if (encrypted) {
-          setConversations(encrypted);
+        if (remote) {
+          setConversations(await decryptRemoteRecord<Conversation[]>(currentUser.username, recordName, remote));
           window.localStorage.removeItem("milo-conversations");
         } else {
+          const encryptedLocal = await loadEncryptedRecord<Conversation[]>(recordName)
+            ?? (currentUser.role === "admin" ? await loadEncryptedRecord<Conversation[]>("conversations") : null);
           const legacy = currentUser.role === "admin" ? window.localStorage.getItem("milo-conversations") : null;
-          if (legacy) {
-            const migrated = JSON.parse(legacy) as Conversation[];
-            await saveEncryptedRecord(recordName, migrated);
+          const migrated = encryptedLocal ?? (legacy ? JSON.parse(legacy) as Conversation[] : null);
+          if (migrated) {
+            await saveEncryptedRecordRemote(recordName, await encryptRemoteRecord(currentUser.username, recordName, migrated));
             if (cancelled) return;
             setConversations(migrated);
             window.localStorage.removeItem("milo-conversations");
@@ -333,7 +323,9 @@ export default function ChatApp() {
     if (!hydrated || !currentUser) return;
     const version = storageWriteVersionRef.current + 1;
     storageWriteVersionRef.current = version;
-    void saveEncryptedRecord(`conversations:${currentUser.username}`, conversations).catch(() => {
+    const recordName = `conversations:${currentUser.username}`;
+    void encryptRemoteRecord(currentUser.username, recordName, conversations)
+      .then((payload) => saveEncryptedRecordRemote(recordName, payload)).catch(() => {
       if (storageWriteVersionRef.current === version) setToast("加密消息记录保存失败");
     });
   }, [conversations, currentUser, hydrated]);
@@ -736,20 +728,25 @@ export default function ChatApp() {
   }
 
   async function login(username: string, password: string): Promise<string | null> {
-    const normalized = normalizeUsername(username);
-    const user = users.find((entry) => entry.username === normalized);
-    if (!user || !(await verifyLocalPassword(user, password))) return "账户名或密码不正确";
-    window.localStorage.setItem("milo-session", JSON.stringify({ username: user.username, version: 3 }));
-    setHydrated(false);
-    setSecureStorageReady(false);
-    setCurrentUser(user);
-    setAuthenticated(true);
-    setSelfAvatar(window.localStorage.getItem(`milo-self-avatar:${user.username}`));
-    return null;
+    try {
+      const user = await loginRemote(normalizeUsername(username), password);
+      await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
+      setUsers(user.role === "admin" ? await fetchUsers() : []);
+      setHydrated(false);
+      setSecureStorageReady(false);
+      setCurrentUser(user);
+      setAuthenticated(true);
+      setSelfAvatar(window.localStorage.getItem(`milo-self-avatar:${user.username}`));
+      return null;
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid credentials") return "账户名或密码不正确";
+      return "服务器暂时不可用，请稍后重试";
+    }
   }
 
   function logout() {
-    window.localStorage.removeItem("milo-session");
+    if (currentUser) void lockRemoteVault(currentUser.username);
+    void logoutRemote();
     setAccountOpen(false);
     setUserManagerOpen(false);
     setHydrated(false);
@@ -771,16 +768,15 @@ export default function ChatApp() {
       setUserFormError("该用户名已存在");
       return;
     }
-    if (newUserPassword.length < 8) {
-      setUserFormError("初始密码至少需要 8 位");
+    if (newUserPassword.length < 12) {
+      setUserFormError("初始密码至少需要 12 位");
       return;
     }
     setCreatingUser(true);
     setUserFormError("");
     try {
-      const user = await createLocalUser(username, newDisplayName.trim() || username, newUserPassword);
+      const user = await createRemoteUser({ username, displayName: newDisplayName.trim() || username, password: newUserPassword });
       const nextUsers = [...users, user];
-      await saveEncryptedRecord("users", nextUsers);
       setUsers(nextUsers);
       setNewUsername("");
       setNewDisplayName("");

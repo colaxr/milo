@@ -26,26 +26,38 @@ test("server-renders the Milo application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 
-test("keeps local security wiring and a deployment-only public README", async () => {
-  const [chatApp, secureStorage, localAuth, dockerfile, readme] = await Promise.all([
+test("keeps database, encrypted storage, auth, and deployment wiring", async () => {
+  const [chatApp, secureStorage, auth, mongo, recordsRoute, dockerfile, mongoDockerfile, readme] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/local-auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/mongodb.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/records/[name]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
+    readFile(new URL("../Dockerfile.mongo", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
   ]);
 
   assert.match(secureStorage, /AES-GCM/);
-  assert.match(secureStorage, /extractable|false,/);
-  assert.match(secureStorage, /additionalData/);
-  assert.match(localAuth, /PBKDF2/);
-  assert.match(localAuth, /SHA-256/);
+  assert.match(secureStorage, /PBKDF2/);
+  assert.match(secureStorage, /remoteAdditionalData/);
+  assert.match(auth, /scrypt/);
+  assert.match(auth, /timingSafeEqual/);
+  assert.match(auth, /HttpOnly; SameSite=Strict/);
+  assert.match(mongo, /MongoClient/);
+  assert.match(mongo, /retryWrites: true/);
+  assert.match(mongo, /expireAfterSeconds: 0/);
+  assert.match(recordsRoute, /ciphertext/);
+  assert.match(recordsRoute, /username: user\.username/);
   assert.match(chatApp, /conversations:\$\{currentUser\.username\}/);
   assert.match(chatApp, /currentUser\?\.role === "admin"/);
   assert.match(dockerfile, /HEALTHCHECK/);
+  assert.match(dockerfile, /\/api\/health/);
   assert.match(dockerfile, /--hostname", "0\.0\.0\.0"/);
-  assert.match(readme, /docker build -t milo:latest/);
+  assert.match(mongoDockerfile, /mongo:8\.0\.28-noble/);
+  assert.match(readme, /docker build -t milo-app:latest/);
   assert.match(readme, /docker run -d/);
-  assert.match(readme, /docker logs -f milo/);
+  assert.match(readme, /milo-mongo-data:\/data\/db/);
+  assert.match(readme, /mongodump --archive --gzip/);
   assert.doesNotMatch(readme, /当前能力|功能|私信|端到端加密|管理员账户/);
 });
