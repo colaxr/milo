@@ -86,6 +86,21 @@ type RemoteMessagePayload = {
   sentAt: string;
 };
 
+type CallMode = "audio" | "video";
+
+type CallSignalPayload =
+  | { kind: "call-offer"; callId: string; mode: CallMode; description: RTCSessionDescriptionInit }
+  | { kind: "call-answer"; callId: string; description: RTCSessionDescriptionInit }
+  | { kind: "call-ice"; callId: string; candidate: RTCIceCandidateInit }
+  | { kind: "call-reject" | "call-busy" | "call-end"; callId: string };
+
+type IncomingCall = {
+  callId: string;
+  mode: CallMode;
+  caller: Conversation;
+  offer: RTCSessionDescriptionInit;
+};
+
 type MainView = "messages" | "contacts";
 
 const initialConversations: Conversation[] = [];
@@ -124,6 +139,19 @@ function isRemoteMessagePayload(value: unknown): value is RemoteMessagePayload {
   return typeof payload.body === "string" && typeof payload.sentAt === "string";
 }
 
+function isCallSignalPayload(value: unknown): value is CallSignalPayload {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Partial<CallSignalPayload> & { kind?: string; callId?: unknown };
+  if (!payload.callId || typeof payload.callId !== "string" || !/^[a-f0-9-]{16,80}$/i.test(payload.callId)) return false;
+  if (payload.kind === "call-offer") {
+    return (payload.mode === "audio" || payload.mode === "video")
+      && Boolean(payload.description && typeof payload.description === "object");
+  }
+  if (payload.kind === "call-answer") return Boolean(payload.description && typeof payload.description === "object");
+  if (payload.kind === "call-ice") return Boolean(payload.candidate && typeof payload.candidate === "object");
+  return payload.kind === "call-reject" || payload.kind === "call-busy" || payload.kind === "call-end";
+}
+
 function formatMessageTime(value = new Date()): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(value);
 }
@@ -137,6 +165,9 @@ function messageSendError(error: unknown): string {
   if (reason === "recipient not found") return "对方账号不存在，请重新搜索用户名";
   if (reason === "unauthorized") return "登录已过期，请重新登录后再发送";
   if (reason === "Failed to fetch") return "服务器暂时不可用，请检查网络或稍后重试";
+  if (reason === "secure context required") return "请使用 HTTPS 后再开始通话";
+  if (reason === "NotAllowedError") return "请允许浏览器使用麦克风和摄像头后再通话";
+  if (reason === "NotFoundError") return "没有检测到可用的麦克风或摄像头";
   return "消息发送失败，请稍后重试";
 }
 
@@ -243,8 +274,12 @@ export default function ChatApp() {
   const [actionMessageId, setActionMessageId] = useState<string | null>(null);
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [messageQuery, setMessageQuery] = useState("");
-  const [callMode, setCallMode] = useState<"audio" | "video" | null>(null);
+  const [callMode, setCallMode] = useState<CallMode | null>(null);
+  const [callStatus, setCallStatus] = useState<"calling" | "connecting" | "connected">("calling");
   const [callSeconds, setCallSeconds] = useState(0);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [localMediaStream, setLocalMediaStream] = useState<MediaStream | null>(null);
+  const [remoteMediaStream, setRemoteMediaStream] = useState<MediaStream | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -266,10 +301,205 @@ export default function ChatApp() {
   const contactLongPressTimerRef = useRef<number | null>(null);
   const storageWriteVersionRef = useRef(0);
   const messagePollInFlightRef = useRef(false);
+  const conversationsRef = useRef(conversations);
+  const callIdRef = useRef<string | null>(null);
+  const callPeerRef = useRef<string | null>(null);
+  const callModeRef = useRef<CallMode | null>(null);
+  const incomingCallRef = useRef<IncomingCall | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const localMediaStreamRef = useRef<MediaStream | null>(null);
+  const remoteMediaStreamRef = useRef<MediaStream | null>(null);
+  const pendingIceCandidatesRef = useRef(new Map<string, RTCIceCandidateInit[]>());
+  const processedCallSignalsRef = useRef(new Set<string>());
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  conversationsRef.current = conversations;
 
   async function registerIdentityKeyForUser(username: string): Promise<void> {
     if (!canUseDeviceEncryption()) return;
     await registerRemoteIdentityKey(await getIdentityPublicKey(username));
+  }
+
+  async function sendEncryptedPayload(recipientId: string, payload: unknown, messageId = crypto.randomUUID()): Promise<void> {
+    if (!currentUser || !deviceEncryptionEnabled) throw new Error("secure context required");
+    const recipientPublicKey = await fetchRemoteIdentityKey(recipientId);
+    const envelope = await encryptMessageEnvelope(currentUser.username, recipientId, messageId, payload, recipientPublicKey);
+    await sendRemoteMessage(envelope);
+  }
+
+  async function sendCallSignal(recipientId: string, payload: CallSignalPayload): Promise<void> {
+    await sendEncryptedPayload(recipientId, payload);
+  }
+
+  function setIncomingCallState(value: IncomingCall | null): void {
+    incomingCallRef.current = value;
+    setIncomingCall(value);
+  }
+
+  function setRemoteCallStream(stream: MediaStream | null): void {
+    remoteMediaStreamRef.current = stream;
+    setRemoteMediaStream(stream);
+  }
+
+  async function flushPendingIceCandidates(callId: string, connection: RTCPeerConnection): Promise<void> {
+    const pending = pendingIceCandidatesRef.current.get(callId) ?? [];
+    pendingIceCandidatesRef.current.delete(callId);
+    for (const candidate of pending) await connection.addIceCandidate(candidate);
+  }
+
+  function createCallPeerConnection(peerUsername: string, callId: string): RTCPeerConnection {
+    const connection = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+    connection.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      void sendCallSignal(peerUsername, { kind: "call-ice", callId, candidate: event.candidate.toJSON() }).catch(() => {
+        setToast("通话网络协商失败，请检查 HTTPS 或网络连接");
+      });
+    };
+    connection.ontrack = (event) => {
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      setRemoteCallStream(stream);
+    };
+    connection.onconnectionstatechange = () => {
+      if (connection !== peerConnectionRef.current) return;
+      if (connection.connectionState === "connected") setCallStatus("connected");
+      if (connection.connectionState === "failed") {
+        setToast("通话连接失败，当前网络可能需要 TURN 中继");
+        cleanupCall(false);
+      }
+      if (connection.connectionState === "disconnected") setCallStatus("connecting");
+    };
+    localMediaStreamRef.current?.getTracks().forEach((track) => connection.addTrack(track, localMediaStreamRef.current as MediaStream));
+    peerConnectionRef.current = connection;
+    return connection;
+  }
+
+  function cleanupCall(sendEndSignal = false): void {
+    const callId = callIdRef.current;
+    const peer = callPeerRef.current;
+    if (sendEndSignal && callId && peer) void sendCallSignal(peer, { kind: "call-end", callId }).catch(() => undefined);
+    const connection = peerConnectionRef.current;
+    if (connection) {
+      connection.onicecandidate = null;
+      connection.ontrack = null;
+      connection.onconnectionstatechange = null;
+      connection.close();
+    }
+    localMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    peerConnectionRef.current = null;
+    localMediaStreamRef.current = null;
+    callIdRef.current = null;
+    callPeerRef.current = null;
+    callModeRef.current = null;
+    pendingIceCandidatesRef.current.clear();
+    setLocalMediaStream(null);
+    setRemoteCallStream(null);
+    setCallMode(null);
+    setCallSeconds(0);
+  }
+
+  function conversationForCaller(username: string, contacts: LocalUser[]): Conversation {
+    const existing = conversationsRef.current.find((conversation) => conversation.id === username);
+    if (existing) return existing;
+    const contact = contacts.find((item) => item.username === username);
+    if (contact) return conversationFromUser(contact);
+    return conversationFromUser({ username, displayName: username, role: "user", vaultSalt: "", vaultIterations: 1, createdAt: "" });
+  }
+
+  async function handleCallSignal(payload: CallSignalPayload, senderUsername: string, contacts: LocalUser[]): Promise<void> {
+    if (payload.kind === "call-offer") {
+      if (callIdRef.current || incomingCallRef.current) {
+        void sendCallSignal(senderUsername, { kind: "call-busy", callId: payload.callId }).catch(() => undefined);
+        return;
+      }
+      const caller = conversationForCaller(senderUsername, contacts);
+      setConversations((items) => items.some((item) => item.id === caller.id) ? items : [...items, caller]);
+      setIncomingCallState({ callId: payload.callId, mode: payload.mode, caller, offer: payload.description });
+      return;
+    }
+    const connection = peerConnectionRef.current;
+    if (payload.kind === "call-answer") {
+      if (payload.callId !== callIdRef.current) return;
+      if (!connection) return;
+      await connection.setRemoteDescription(payload.description);
+      await flushPendingIceCandidates(payload.callId, connection);
+      setCallStatus("connecting");
+      return;
+    }
+    if (payload.kind === "call-ice") {
+      const isCurrentCall = payload.callId === callIdRef.current;
+      const isPendingIncomingCall = payload.callId === incomingCallRef.current?.callId;
+      if (!isCurrentCall && !isPendingIncomingCall) {
+        const pending = pendingIceCandidatesRef.current.get(payload.callId) ?? [];
+        pending.push(payload.candidate);
+        pendingIceCandidatesRef.current.set(payload.callId, pending);
+        return;
+      }
+      if (!connection || !connection.remoteDescription) {
+        const pending = pendingIceCandidatesRef.current.get(payload.callId) ?? [];
+        pending.push(payload.candidate);
+        pendingIceCandidatesRef.current.set(payload.callId, pending);
+      } else {
+        await connection.addIceCandidate(payload.candidate);
+      }
+      return;
+    }
+    const matchesCurrentCall = payload.callId === callIdRef.current;
+    const matchesIncomingCall = payload.callId === incomingCallRef.current?.callId;
+    if (!matchesCurrentCall && !matchesIncomingCall) return;
+    if (payload.kind === "call-reject" || payload.kind === "call-busy") {
+      if (matchesCurrentCall) {
+        setToast(payload.kind === "call-busy" ? "对方正在通话中" : "对方拒绝了通话");
+        cleanupCall(false);
+      } else {
+        setIncomingCallState(null);
+      }
+      return;
+    }
+    if (matchesCurrentCall) cleanupCall(false);
+    else setIncomingCallState(null);
+  }
+
+  async function acceptIncomingCall(): Promise<void> {
+    const pending = incomingCallRef.current;
+    if (!pending || !currentUser || !deviceEncryptionEnabled) {
+      setToast("请使用 HTTPS 后再接听通话");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: pending.mode === "video" });
+      localMediaStreamRef.current = stream;
+      setLocalMediaStream(stream);
+      setActiveView("messages");
+      setActiveId(pending.caller.id);
+      setMobileChatOpen(true);
+      setConversations((items) => items.some((item) => item.id === pending.caller.id) ? items : [...items, pending.caller]);
+      callIdRef.current = pending.callId;
+      callPeerRef.current = pending.caller.id;
+      callModeRef.current = pending.mode;
+      setCallMode(pending.mode);
+      setCallStatus("connecting");
+      setCallSeconds(0);
+      setIncomingCallState(null);
+      const connection = createCallPeerConnection(pending.caller.id, pending.callId);
+      await connection.setRemoteDescription(pending.offer);
+      await flushPendingIceCandidates(pending.callId, connection);
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+      if (!connection.localDescription) throw new Error("call description unavailable");
+      await sendCallSignal(pending.caller.id, { kind: "call-answer", callId: pending.callId, description: connection.localDescription.toJSON() });
+    } catch (error) {
+      cleanupCall(false);
+      setToast(messageSendError(error));
+    }
+  }
+
+  function rejectIncomingCall(): void {
+    const pending = incomingCallRef.current;
+    if (pending) void sendCallSignal(pending.caller.id, { kind: "call-reject", callId: pending.callId }).catch(() => undefined);
+    setIncomingCallState(null);
   }
 
   useEffect(() => {
@@ -373,7 +603,13 @@ export default function ChatApp() {
         if (cancelled) return;
         for (const envelope of envelopes as EncryptedMessageEnvelope[]) {
           try {
-            const payload = await decryptMessageEnvelope<RemoteMessagePayload>(currentUser.username, envelope);
+            if (processedCallSignalsRef.current.has(envelope.messageId)) continue;
+            const payload = await decryptMessageEnvelope<RemoteMessagePayload | CallSignalPayload>(currentUser.username, envelope);
+            if (isCallSignalPayload(payload)) {
+              processedCallSignalsRef.current.add(envelope.messageId);
+              await handleCallSignal(payload, envelope.senderUsername, contacts);
+              continue;
+            }
             if (!isRemoteMessagePayload(payload)) continue;
             const contact = contacts.find((item) => item.username === envelope.senderUsername);
             setConversations((items) => {
@@ -411,6 +647,8 @@ export default function ChatApp() {
       cancelled = true;
       window.clearInterval(timer);
     };
+  // handleCallSignal uses refs for the active call so polling does not restart on every call state change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, currentUser, deviceEncryptionEnabled, hydrated]);
 
   useEffect(() => {
@@ -422,6 +660,12 @@ export default function ChatApp() {
     const timer = window.setInterval(() => setCallSeconds((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
   }, [callMode]);
+
+  useEffect(() => {
+    if (localVideoRef.current) localVideoRef.current.srcObject = localMediaStream;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteMediaStream;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteMediaStream;
+  }, [localMediaStream, remoteMediaStream, callMode]);
 
   useEffect(() => {
     if (!toast) return;
@@ -579,15 +823,11 @@ export default function ChatApp() {
       return false;
     }
     try {
-      const recipientPublicKey = await fetchRemoteIdentityKey(recipientId);
-      const envelope = await encryptMessageEnvelope(
-        currentUser.username,
+      await sendEncryptedPayload(
         recipientId,
-        message.id,
         { body: message.body, replyTo: message.replyTo, attachment: message.attachment, sentAt: new Date().toISOString() } satisfies RemoteMessagePayload,
-        recipientPublicKey,
+        message.id,
       );
-      await sendRemoteMessage(envelope);
       setConversations((items) => items.map((item) => item.id === recipientId ? { ...item, messages: [...item.messages, message] } : item));
       if (successToast) setToast(successToast);
       return true;
@@ -789,9 +1029,36 @@ export default function ChatApp() {
     setSwipeGesture(null);
   }
 
-  function startCall(mode: "audio" | "video") {
-    setCallSeconds(0);
-    setCallMode(mode);
+  async function startCall(mode: CallMode): Promise<void> {
+    if (!activeId || callIdRef.current || incomingCallRef.current) return;
+    if (!currentUser || !deviceEncryptionEnabled) {
+      setToast("请使用 HTTPS 后再开始通话");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+      setToast("当前浏览器不支持实时通话");
+      return;
+    }
+    const callId = crypto.randomUUID();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === "video" });
+      localMediaStreamRef.current = stream;
+      setLocalMediaStream(stream);
+      callIdRef.current = callId;
+      callPeerRef.current = activeId;
+      callModeRef.current = mode;
+      setCallMode(mode);
+      setCallStatus("calling");
+      setCallSeconds(0);
+      const connection = createCallPeerConnection(activeId, callId);
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+      if (!connection.localDescription) throw new Error("call description unavailable");
+      await sendCallSignal(activeId, { kind: "call-offer", callId, mode, description: connection.localDescription.toJSON() });
+    } catch (error) {
+      cleanupCall(false);
+      setToast(messageSendError(error));
+    }
   }
 
   function handleAttachment(file?: File) {
@@ -1354,15 +1621,33 @@ export default function ChatApp() {
         </aside>
       )}
 
+      {incomingCall && !callMode && (
+        <div className="modal-backdrop call-backdrop">
+          <section className="call-card incoming-call-card">
+            <Avatar person={incomingCall.caller} size="lg" />
+            <h2>{incomingCall.caller.name}</h2>
+            <p>邀请你进行{incomingCall.mode === "video" ? "视频" : "语音"}通话</p>
+            <div className="incoming-call-actions">
+              <button className="reject-call" onClick={rejectIncomingCall}><PhoneOff size={20} /><span>拒绝</span></button>
+              <button className="accept-call" onClick={() => void acceptIncomingCall()}><Phone size={20} /><span>接听</span></button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {callMode && active && (
         <div className="modal-backdrop call-backdrop">
           <section className="call-card">
             <Avatar person={active} size="lg" />
             <h2>{active.name}</h2>
-            <p>{callSeconds < 2 ? "正在连接…" : callMode === "video" ? "视频通话中" : "语音通话中"}</p>
+            <p>{callStatus === "calling" ? "正在呼叫…" : callStatus === "connected" ? `${callMode === "video" ? "视频" : "语音"}通话中` : "正在连接…"}</p>
             <time>{formatDuration(callSeconds)}</time>
-            {callMode === "video" && <div className="video-preview"><Video size={34} /><span>本地摄像头预览</span></div>}
-            <button className="end-call" onClick={() => setCallMode(null)}><PhoneOff size={20} /></button>
+            {callMode === "video" && <div className="video-stage">
+              {remoteMediaStream ? <video ref={remoteVideoRef} autoPlay playsInline /> : <span>等待对方接听…</span>}
+              {localMediaStream && <video ref={localVideoRef} className="local-video-preview" autoPlay muted playsInline />}
+            </div>}
+            {callMode === "audio" && <audio ref={remoteAudioRef} autoPlay />}
+            <button className="end-call" onClick={() => cleanupCall(true)}><PhoneOff size={20} /></button>
           </section>
         </div>
       )}

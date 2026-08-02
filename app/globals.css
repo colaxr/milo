@@ -251,6 +251,17 @@ h1, h2, p { margin-top: 0; }
 .call-card > time { margin-top: 9px; color: #d2d8dd; font: 11px/1 var(--font-geist-mono); }
 .video-preview { width: 100%; height: 130px; margin: 25px 0 0; display: grid; place-items: center; align-content: center; gap: 10px; border-radius: 15px; background: #111b26; color: #6d7a86; }
 .video-preview span { font-size: 9px; }
+.incoming-call-card { min-height: 300px; }
+.incoming-call-actions { width: 100%; margin-top: auto; display: flex; justify-content: center; gap: 28px; }
+.incoming-call-actions button { min-width: 72px; min-height: 52px; display: grid; place-items: center; gap: 4px; border: 0; border-radius: 14px; color: white; cursor: pointer; }
+.incoming-call-actions button span { font-size: 10px; }
+.reject-call { background: #dc5d52; }
+.accept-call { background: #1f3a5f; }
+.video-stage { position: relative; width: 100%; height: 190px; margin: 25px 0 0; display: grid; place-items: center; overflow: hidden; border-radius: 15px; background: #111b26; color: #aab6c1; }
+.video-stage > video:first-child { width: 100%; height: 100%; object-fit: cover; }
+.video-stage > span { font-size: 10px; }
+.local-video-preview { position: absolute; right: 10px; bottom: 10px; width: 86px !important; height: 112px !important; border: 2px solid rgba(255,255,255,.75); border-radius: 8px; object-fit: cover !important; }
+.call-card > audio { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .end-call { width: 52px; height: 52px; margin-top: auto; display: grid; place-items: center; border: 0; border-radius: 50%; background: #dc5d52; color: white; cursor: pointer; box-shadow: 0 8px 20px rgba(220,93,82,.3); }
 .info-modal, .shared-modal { position: relative; width: min(430px, 100%); padding: 34px; border-radius: 20px; background: white; box-shadow: 0 24px 70px rgba(20,23,25,.2); }
 .info-modal { text-align: center; }
