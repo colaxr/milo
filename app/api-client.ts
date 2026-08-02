@@ -51,7 +51,7 @@ export async function createRemoteUser(input: { username: string; displayName: s
   return (await api<{ user: LocalUser }>("/api/users", { method: "POST", body: JSON.stringify(input) })).user;
 }
 
-export async function updateRemoteUser(username: string, input: { displayName: string }): Promise<LocalUser> {
+export async function updateRemoteUser(username: string, input: { username: string; displayName: string; password?: string }): Promise<LocalUser> {
   return (await api<{ user: LocalUser }>(`/api/users/${encodeURIComponent(username)}`, {
     method: "PATCH",
     body: JSON.stringify(input),

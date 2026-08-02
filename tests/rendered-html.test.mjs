@@ -68,6 +68,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(usersRoute, /searchParams\.get\("q"\)/);
   assert.match(usersItemRoute, /export async function PATCH/);
   assert.match(usersItemRoute, /export async function DELETE/);
+  assert.match(usersItemRoute, /updateUserAccount/);
+  assert.match(auth, /USER_HAS_RECORDS/);
   assert.match(apiClient, /searchRemoteUsers/);
   assert.match(apiClient, /updateRemoteUser/);
   assert.match(apiClient, /deleteRemoteUser/);
@@ -76,6 +78,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /HTTP 测试模式：已登录/);
   assert.match(chatApp, /conversations:\$\{currentUser\.username\}/);
   assert.match(chatApp, /currentUser\?\.role === "admin"/);
+  assert.match(chatApp, /editingUsername/);
+  assert.match(chatApp, /editingPassword/);
+  assert.match(chatApp, /addUserContact/);
   assert.match(chatApp, /const initialConversations: Conversation\[\] = \[\];/);
   assert.match(chatApp, /removeLegacyDemoConversations/);
   assert.match(chatApp, /暂无对话/);

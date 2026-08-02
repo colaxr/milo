@@ -139,13 +139,59 @@ export function searchUsers(query: string, excludeUsername?: string): UserDocume
   return rows.map(fromRow);
 }
 
-export function updateUserDisplayName(username: string, displayName: string): UserDocument | null {
+export async function updateUserAccount(
+  username: string,
+  input: { newUsername?: string; displayName?: string; password?: string },
+): Promise<UserDocument | null> {
   const normalized = normalizeUsername(username);
   const user = findUser(normalized);
   if (!user) return null;
-  const nextDisplayName = displayName.trim() || normalized;
-  getDatabase().prepare("UPDATE users SET display_name = ? WHERE username = ?").run(nextDisplayName, normalized);
-  return findUser(normalized);
+
+  const nextUsername = normalizeUsername(input.newUsername ?? normalized);
+  if (!/^[a-z0-9_.-]{3,32}$/.test(nextUsername)) throw new Error("INVALID_USERNAME");
+  if (typeof input.password === "string" && input.password.length > 0 && input.password.length < 12) throw new Error("WEAK_PASSWORD");
+  const nextDisplayName = input.displayName?.trim() || user.displayName || nextUsername;
+  const database = getDatabase();
+  const records = database.prepare("SELECT COUNT(*) AS count FROM records WHERE username = ?").get(normalized) as { count: number };
+  if (records.count > 0 && (nextUsername !== normalized || Boolean(input.password))) throw new Error("USER_HAS_RECORDS");
+  const duplicate = database.prepare("SELECT 1 AS found FROM users WHERE username = ? AND username <> ?").get(nextUsername, normalized) as { found: number } | undefined;
+  if (duplicate) throw new Error("USERNAME_EXISTS");
+
+  let passwordSalt = user.passwordSalt;
+  let passwordHashValue = user.passwordHash;
+  if (input.password) {
+    const salt = randomBytes(16);
+    passwordSalt = salt.toString("base64");
+    passwordHashValue = (await passwordHash(input.password, salt)).toString("base64");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    if (nextUsername !== normalized) {
+      database.prepare(`
+        INSERT INTO users (
+          username, display_name, role, password_salt, password_hash,
+          vault_salt, vault_iterations, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(nextUsername, nextDisplayName, user.role, passwordSalt, passwordHashValue, user.vaultSalt, user.vaultIterations, user.createdAt.toISOString());
+      database.prepare("UPDATE sessions SET username = ? WHERE username = ?").run(nextUsername, normalized);
+      database.prepare("UPDATE records SET username = ? WHERE username = ?").run(nextUsername, normalized);
+      if (input.password) database.prepare("DELETE FROM sessions WHERE username = ?").run(nextUsername);
+      database.prepare("DELETE FROM users WHERE username = ?").run(normalized);
+    } else {
+      database.prepare(`
+        UPDATE users
+        SET display_name = ?, password_salt = ?, password_hash = ?
+        WHERE username = ?
+      `).run(nextDisplayName, passwordSalt, passwordHashValue, normalized);
+      if (input.password) database.prepare("DELETE FROM sessions WHERE username = ?").run(normalized);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return findUser(nextUsername);
 }
 
 export function deleteUser(username: string): boolean {

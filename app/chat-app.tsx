@@ -173,7 +173,9 @@ export default function ChatApp() {
   const [currentUser, setCurrentUser] = useState<LocalUser | null>(null);
   const [userManagerOpen, setUserManagerOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<string | null>(null);
+  const [editingUsername, setEditingUsername] = useState("");
   const [editingDisplayName, setEditingDisplayName] = useState("");
+  const [editingPassword, setEditingPassword] = useState("");
   const [updatingUser, setUpdatingUser] = useState(false);
   const [deleteUserTarget, setDeleteUserTarget] = useState<LocalUser | null>(null);
   const [deletingUser, setDeletingUser] = useState(false);
@@ -802,28 +804,47 @@ export default function ChatApp() {
 
   function beginEditUser(user: LocalUser) {
     setEditingUser(user.username);
+    setEditingUsername(user.username);
     setEditingDisplayName(user.displayName);
+    setEditingPassword("");
     setUserFormError("");
   }
 
   function cancelEditUser() {
     setEditingUser(null);
+    setEditingUsername("");
     setEditingDisplayName("");
+    setEditingPassword("");
   }
 
   async function saveUserEdit(event: FormEvent) {
     event.preventDefault();
     if (!editingUser || currentUser?.role !== "admin") return;
+    const username = normalizeUsername(editingUsername);
     const displayName = editingDisplayName.trim();
+    const password = editingPassword;
+    if (!/^[a-z0-9_.-]{3,32}$/.test(username)) {
+      setUserFormError("用户名需为 3–32 位小写字母、数字、点、横线或下划线");
+      return;
+    }
     if (!displayName) {
       setUserFormError("显示名称不能为空");
+      return;
+    }
+    if (password && password.length < 12) {
+      setUserFormError("新密码至少需要 12 位");
       return;
     }
     setUpdatingUser(true);
     setUserFormError("");
     try {
-      const updated = await updateRemoteUser(editingUser, { displayName });
-      setUsers((items) => items.map((user) => user.username === updated.username ? updated : user));
+      const oldUsername = editingUser;
+      const updated = await updateRemoteUser(oldUsername, { username, displayName, ...(password ? { password } : {}) });
+      setUsers((items) => items.map((user) => user.username === oldUsername ? updated : user));
+      if (oldUsername !== updated.username) {
+        setConversations((items) => items.map((item) => item.id === oldUsername ? { ...item, id: updated.username, name: updated.displayName, handle: `@${updated.username}`, initials: updated.displayName.slice(0, 1).toUpperCase() } : item));
+        if (activeId === oldUsername) setActiveId(updated.username);
+      }
       cancelEditUser();
       setToast(`用户 ${updated.username} 已更新`);
     } catch {
@@ -863,6 +884,13 @@ export default function ChatApp() {
       const next = existing ? items : [...items, conversationFromUser(user)];
       return next.map((item) => item.id === user.username ? { ...item, unread: 0 } : item);
     });
+  }
+
+  function addUserContact(user: LocalUser) {
+    const alreadyAdded = conversations.some((conversation) => conversation.id === user.username);
+    if (!alreadyAdded) setToast(`已添加联系人 ${user.displayName}`);
+    if (alreadyAdded) return;
+    setConversations((items) => items.some((conversation) => conversation.id === user.username) ? items : [...items, conversationFromUser(user)]);
   }
 
   async function addUser(event: FormEvent) {
@@ -1282,7 +1310,10 @@ export default function ChatApp() {
             {!searchingUsers && newChatSearchError && <div className="user-search-empty"><Search size={24} /><strong>{newChatSearchError}</strong></div>}
             {!searchingUsers && !newChatSearchError && newChatQuery.trim().length < 3 && <div className="user-search-empty"><Search size={24} /><strong>输入完整用户名开始搜索</strong><p>我们不会推荐联系人或展示可能认识的人。</p></div>}
             {!searchingUsers && !newChatSearchError && newChatQuery.trim().length >= 3 && newChatResults.length === 0 && <div className="user-search-empty"><Search size={24} /><strong>没有找到这个用户</strong><p>请确认用户名拼写。</p></div>}
-            {!searchingUsers && newChatResults.length > 0 && <div className="user-search-results">{newChatResults.map((user) => <button key={user.username} className="user-search-result" onClick={() => openUserConversation(user)}><span className="user-search-result-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><span className="user-search-result-copy"><strong>{user.displayName}</strong><small>@{user.username}</small></span><ChevronRight size={16} /></button>)}</div>}
+            {!searchingUsers && newChatResults.length > 0 && <div className="user-search-results">{newChatResults.map((user) => {
+              const isContact = conversations.some((conversation) => conversation.id === user.username);
+              return <button key={user.username} className="user-search-result" onClick={() => isContact ? openUserConversation(user) : addUserContact(user)}><span className="user-search-result-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><span className="user-search-result-copy"><strong>{user.displayName}</strong><small>@{user.username} · {isContact ? "已在联系人中，打开聊天" : "点击添加联系人"}</small></span><ChevronRight size={16} /></button>;
+            })}</div>}
           </section>
         </div>
       )}
@@ -1293,8 +1324,13 @@ export default function ChatApp() {
             <div className="managed-user-list">
               {users.map((user) => editingUser === user.username ? (
                 <form key={user.username} className="managed-user-edit" onSubmit={saveUserEdit}>
-                  <label><span>显示名称</span><input value={editingDisplayName} onChange={(event) => { setEditingDisplayName(event.target.value); setUserFormError(""); }} autoFocus /></label>
-                  <div><button type="button" onClick={cancelEditUser}>取消</button><button className="save-user-button" disabled={updatingUser}>{updatingUser ? "保存中…" : "保存"}</button></div>
+                  <div className="managed-user-edit-grid">
+                    <label><span>用户名</span><input value={editingUsername} onChange={(event) => { setEditingUsername(event.target.value); setUserFormError(""); }} autoFocus autoComplete="off" /></label>
+                    <label><span>显示名称</span><input value={editingDisplayName} onChange={(event) => { setEditingDisplayName(event.target.value); setUserFormError(""); }} /></label>
+                    <label className="managed-user-password-field"><span>新密码（可选）</span><input value={editingPassword} onChange={(event) => { setEditingPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="留空表示不修改，至少 12 位" autoComplete="new-password" /></label>
+                  </div>
+                  <p className="managed-user-edit-hint">已有加密聊天记录的用户不能直接修改用户名或密码，需先完成设备迁移。</p>
+                  <div className="managed-user-edit-actions"><button type="button" onClick={cancelEditUser}>取消</button><button className="save-user-button" disabled={updatingUser}>{updatingUser ? "保存中…" : "保存"}</button></div>
                 </form>
               ) : (
                 <div key={user.username} className="managed-user-row">
