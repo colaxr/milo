@@ -54,6 +54,19 @@ function initialize(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_records_updated_at
     ON records(updated_at)
   `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS contacts (
+      owner_username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      contact_username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (owner_username, contact_username),
+      CHECK (owner_username <> contact_username)
+    ) STRICT
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_contacts_contact_username
+    ON contacts(contact_username)
+  `);
   database.exec("PRAGMA optimize");
 }
 

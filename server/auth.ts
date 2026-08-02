@@ -174,6 +174,8 @@ export async function updateUserAccount(
           vault_salt, vault_iterations, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(nextUsername, nextDisplayName, user.role, passwordSalt, passwordHashValue, user.vaultSalt, user.vaultIterations, user.createdAt.toISOString());
+      database.prepare("UPDATE contacts SET owner_username = ? WHERE owner_username = ?").run(nextUsername, normalized);
+      database.prepare("UPDATE contacts SET contact_username = ? WHERE contact_username = ?").run(nextUsername, normalized);
       database.prepare("UPDATE sessions SET username = ? WHERE username = ?").run(nextUsername, normalized);
       database.prepare("UPDATE records SET username = ? WHERE username = ?").run(nextUsername, normalized);
       if (input.password) database.prepare("DELETE FROM sessions WHERE username = ?").run(nextUsername);

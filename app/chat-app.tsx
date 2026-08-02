@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { createRemoteUser, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, searchRemoteUsers, setupRemote, updateRemoteUser } from "./api-client";
+import { addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, searchRemoteUsers, setupRemote, updateRemoteUser } from "./api-client";
 import { canUseDeviceEncryption, decryptRemoteRecord, encryptRemoteRecord, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
@@ -102,6 +102,11 @@ function conversationFromUser(user: LocalUser): Conversation {
     lastSeen: "刚刚加入",
     messages: [],
   };
+}
+
+function mergeContactConversations(conversations: Conversation[], contacts: LocalUser[]): Conversation[] {
+  const existing = new Set(conversations.map((conversation) => conversation.id));
+  return [...conversations, ...contacts.filter((contact) => !existing.has(contact.username)).map(conversationFromUser)];
 }
 
 function LoginScreen({ initialized, onLogin, onSetup }: {
@@ -264,16 +269,26 @@ export default function ChatApp() {
   }, []);
 
   useEffect(() => {
-    if (!currentUser || !deviceEncryptionEnabled) return;
+    if (!currentUser) return;
     let cancelled = false;
     const recordName = `conversations:${currentUser.username}`;
     void (async () => {
       try {
+        const contacts = await fetchRemoteContacts();
+        if (cancelled) return;
+        if (!deviceEncryptionEnabled) {
+          const contactConversations = contacts.map(conversationFromUser);
+          setConversations(contactConversations);
+          setActiveId(contactConversations[0]?.id ?? "");
+          setHydrated(true);
+          setSecureStorageReady(false);
+          return;
+        }
         const remote = await fetchEncryptedRecord(recordName);
         if (cancelled) return;
         if (remote) {
           const storedConversations = await decryptRemoteRecord<Conversation[]>(currentUser.username, recordName, remote);
-          const cleanedConversations = removeLegacyDemoConversations(storedConversations);
+          const cleanedConversations = mergeContactConversations(removeLegacyDemoConversations(storedConversations), contacts);
           setConversations(cleanedConversations);
           setActiveId(cleanedConversations[0]?.id ?? "");
           window.localStorage.removeItem("milo-conversations");
@@ -282,22 +297,17 @@ export default function ChatApp() {
             ?? (currentUser.role === "admin" ? await loadEncryptedRecord<Conversation[]>("conversations") : null);
           const legacy = currentUser.role === "admin" ? window.localStorage.getItem("milo-conversations") : null;
           const storedConversations = encryptedLocal ?? (legacy ? JSON.parse(legacy) as Conversation[] : null);
-          const migrated = storedConversations ? removeLegacyDemoConversations(storedConversations) : null;
-          if (migrated) {
-            await saveEncryptedRecordRemote(recordName, await encryptRemoteRecord(currentUser.username, recordName, migrated));
-            if (cancelled) return;
-            setConversations(migrated);
-            setActiveId(migrated[0]?.id ?? "");
-            window.localStorage.removeItem("milo-conversations");
-          } else {
-            setConversations(initialConversations);
-            setActiveId("");
-          }
+          const migrated = storedConversations ? mergeContactConversations(removeLegacyDemoConversations(storedConversations), contacts) : contacts.map(conversationFromUser);
+          if (storedConversations) await saveEncryptedRecordRemote(recordName, await encryptRemoteRecord(currentUser.username, recordName, migrated));
+          if (cancelled) return;
+          setConversations(migrated);
+          setActiveId(migrated[0]?.id ?? "");
+          window.localStorage.removeItem("milo-conversations");
         }
         setHydrated(true);
         setSecureStorageReady(true);
       } catch {
-        if (!cancelled) setToast("加密消息记录无法读取，已停止写入以保护原数据");
+        if (!cancelled) setToast("联系人或加密消息记录无法读取，请稍后重试");
       }
     })();
     return () => { cancelled = true; };
@@ -637,9 +647,18 @@ export default function ChatApp() {
     setToast(archived ? "对话已归档" : "对话已恢复");
   }
 
-  function confirmDeleteConversation() {
+  async function confirmDeleteConversation() {
     if (!deleteConversationId) return;
     const deletingId = deleteConversationId;
+    if (deleteTargetKind === "contact") {
+      try {
+        await deleteRemoteContact(deletingId);
+      } catch {
+        setDeleteConversationId(null);
+        setToast("联系人删除失败，请稍后重试");
+        return;
+      }
+    }
     const remaining = conversations.filter((item) => item.id !== deletingId);
     setConversations(remaining);
     if (activeId === deletingId) setActiveId(remaining[0]?.id ?? "");
@@ -887,10 +906,16 @@ export default function ChatApp() {
     });
   }
 
-  function addUserContact(user: LocalUser) {
+  async function addUserContact(user: LocalUser) {
     const alreadyAdded = conversations.some((conversation) => conversation.id === user.username);
-    if (!alreadyAdded) setToast(`已添加联系人 ${user.displayName}`);
     if (alreadyAdded) return;
+    try {
+      await addRemoteContact(user.username);
+    } catch {
+      setToast("联系人添加失败，请稍后重试");
+      return;
+    }
+    setToast(`已添加联系人 ${user.displayName}`);
     setConversations((items) => items.some((conversation) => conversation.id === user.username) ? items : [...items, conversationFromUser(user)]);
   }
 
@@ -1301,7 +1326,7 @@ export default function ChatApp() {
             {!searchingUsers && !newChatSearchError && newChatQuery.trim().length >= 3 && newChatResults.length === 0 && <div className="user-search-empty"><Search size={24} /><strong>没有找到这个用户</strong><p>请确认用户名拼写。</p></div>}
             {!searchingUsers && newChatResults.length > 0 && <div className="user-search-results">{newChatResults.map((user) => {
               const isContact = conversations.some((conversation) => conversation.id === user.username);
-              return <button key={user.username} className="user-search-result" onClick={() => isContact ? openUserConversation(user) : addUserContact(user)}><span className="user-search-result-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><span className="user-search-result-copy"><strong>{user.displayName}</strong><small>@{user.username} · {isContact ? "已在联系人中，打开聊天" : "点击添加联系人"}</small></span><ChevronRight size={16} /></button>;
+              return <button key={user.username} className="user-search-result" onClick={() => { if (isContact) openUserConversation(user); else void addUserContact(user); }}><span className="user-search-result-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><span className="user-search-result-copy"><strong>{user.displayName}</strong><small>@{user.username} · {isContact ? "已在联系人中，打开聊天" : "点击添加联系人"}</small></span><ChevronRight size={16} /></button>;
             })}</div>}
           </section>
         </div>
