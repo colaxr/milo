@@ -128,6 +128,18 @@ function formatMessageTime(value = new Date()): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(value);
 }
 
+function messageSendError(error: unknown): string {
+  const reason = error instanceof Error ? error.message : "";
+  if (reason === "recipient device unavailable" || reason === "identity key not found") {
+    return "对方尚未打开安全设备，请让对方先通过 HTTPS 登录一次";
+  }
+  if (reason === "contact required") return "请先把对方添加为联系人后再发送";
+  if (reason === "recipient not found") return "对方账号不存在，请重新搜索用户名";
+  if (reason === "unauthorized") return "登录已过期，请重新登录后再发送";
+  if (reason === "Failed to fetch") return "服务器暂时不可用，请检查网络或稍后重试";
+  return "消息发送失败，请稍后重试";
+}
+
 function LoginScreen({ initialized, onLogin, onSetup }: {
   initialized: boolean;
   onLogin: (username: string, password: string) => Promise<string | null>;
@@ -580,7 +592,7 @@ export default function ChatApp() {
       if (successToast) setToast(successToast);
       return true;
     } catch (error) {
-      setToast(error instanceof Error && error.message === "recipient device unavailable" ? "对方尚未打开安全设备，请让对方先登录一次" : "消息发送失败，请稍后重试");
+      setToast(messageSendError(error));
       return false;
     }
   }
