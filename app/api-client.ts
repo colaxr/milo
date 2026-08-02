@@ -51,6 +51,21 @@ export async function createRemoteUser(input: { username: string; displayName: s
   return (await api<{ user: LocalUser }>("/api/users", { method: "POST", body: JSON.stringify(input) })).user;
 }
 
+export async function updateRemoteUser(username: string, input: { displayName: string }): Promise<LocalUser> {
+  return (await api<{ user: LocalUser }>(`/api/users/${encodeURIComponent(username)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  })).user;
+}
+
+export async function deleteRemoteUser(username: string): Promise<void> {
+  await api(`/api/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+}
+
+export async function searchRemoteUsers(query: string): Promise<LocalUser[]> {
+  return (await api<{ users: LocalUser[] }>(`/api/users?q=${encodeURIComponent(query)}`)).users;
+}
+
 export async function fetchEncryptedRecord(name: string): Promise<EncryptedRecord | null> {
   const result = await api<{ record: { payload: EncryptedRecord } | null }>(`/api/records/${encodeURIComponent(name)}`);
   return result.record?.payload ?? null;

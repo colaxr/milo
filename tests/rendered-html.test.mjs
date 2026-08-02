@@ -26,13 +26,16 @@ test("server-renders the Milo application shell", async () => {
 });
 
 test("keeps SQLite, encrypted storage, auth, and single-container deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, dockerfile, workflow, readme, packageJson, layout] = await Promise.all([
+  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/sqlite.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/records/[name]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/setup/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/users/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/users/[username]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/publish-images.yml", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
@@ -61,6 +64,13 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(recordsRoute, /ON CONFLICT\(username, name\) DO UPDATE/);
   assert.match(setupRoute, /createFirstAdmin/);
   assert.match(setupRoute, /sessionCookie/);
+  assert.match(usersRoute, /searchUsers/);
+  assert.match(usersRoute, /searchParams\.get\("q"\)/);
+  assert.match(usersItemRoute, /export async function PATCH/);
+  assert.match(usersItemRoute, /export async function DELETE/);
+  assert.match(apiClient, /searchRemoteUsers/);
+  assert.match(apiClient, /updateRemoteUser/);
+  assert.match(apiClient, /deleteRemoteUser/);
   assert.match(chatApp, /fetchInitializationStatus/);
   assert.match(chatApp, /setupRemote/);
   assert.match(chatApp, /HTTP 测试模式：已登录/);
