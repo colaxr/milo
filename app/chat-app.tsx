@@ -171,10 +171,40 @@ function messageSendError(error: unknown): string {
   return "消息发送失败，请稍后重试";
 }
 
+type CallWindow = Window & {
+  webkitRTCPeerConnection?: typeof RTCPeerConnection;
+  mozRTCPeerConnection?: typeof RTCPeerConnection;
+};
+
+type LegacyMediaNavigator = Navigator & {
+  webkitGetUserMedia?: (constraints: MediaStreamConstraints, success: (stream: MediaStream) => void, failure: (error: DOMException) => void) => void;
+  mozGetUserMedia?: (constraints: MediaStreamConstraints, success: (stream: MediaStream) => void, failure: (error: DOMException) => void) => void;
+  getUserMedia?: (constraints: MediaStreamConstraints, success: (stream: MediaStream) => void, failure: (error: DOMException) => void) => void;
+};
+
+function getCallPeerConnectionConstructor(): typeof RTCPeerConnection | undefined {
+  const callWindow = window as CallWindow;
+  return callWindow.RTCPeerConnection ?? callWindow.webkitRTCPeerConnection ?? callWindow.mozRTCPeerConnection;
+}
+
+function hasCallMediaApi(): boolean {
+  const legacyNavigator = navigator as LegacyMediaNavigator;
+  return Boolean(navigator.mediaDevices?.getUserMedia || legacyNavigator.webkitGetUserMedia || legacyNavigator.mozGetUserMedia || legacyNavigator.getUserMedia);
+}
+
+function requestCallMedia(constraints: MediaStreamConstraints): Promise<MediaStream> {
+  const modernGetUserMedia = navigator.mediaDevices?.getUserMedia;
+  if (modernGetUserMedia) return modernGetUserMedia.call(navigator.mediaDevices, constraints);
+  const legacyNavigator = navigator as LegacyMediaNavigator;
+  const legacyGetUserMedia = legacyNavigator.webkitGetUserMedia ?? legacyNavigator.mozGetUserMedia ?? legacyNavigator.getUserMedia;
+  if (!legacyGetUserMedia) return Promise.reject(new Error("media devices unavailable"));
+  return new Promise((resolve, reject) => legacyGetUserMedia.call(navigator, constraints, resolve, reject));
+}
+
 function callCapabilityError(): string | null {
   if (!window.isSecureContext) return "通话需要 HTTPS，请使用 HTTPS 域名打开";
-  if (!navigator.mediaDevices?.getUserMedia) return "当前页面没有麦克风/摄像头接口，请用外部 Chrome 或 Edge 打开";
-  if (typeof window.RTCPeerConnection !== "function") return "当前浏览器没有 WebRTC 接口，请升级 Chrome、Edge 或 Firefox";
+  if (!hasCallMediaApi()) return "当前页面没有麦克风/摄像头接口，请用外部 Chrome 或 Edge 打开";
+  if (!getCallPeerConnectionConstructor()) return "当前浏览器没有 WebRTC 接口，请升级 Chrome、Edge 或 Firefox";
   return null;
 }
 
@@ -356,7 +386,9 @@ export default function ChatApp() {
   }
 
   function createCallPeerConnection(peerUsername: string, callId: string): RTCPeerConnection {
-    const connection = new RTCPeerConnection({
+    const PeerConnection = getCallPeerConnectionConstructor();
+    if (!PeerConnection) throw new Error("WebRTC unavailable");
+    const connection = new PeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
     connection.onicecandidate = (event) => {
@@ -481,7 +513,7 @@ export default function ChatApp() {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: pending.mode === "video" });
+      const stream = await requestCallMedia({ audio: true, video: pending.mode === "video" });
       localMediaStreamRef.current = stream;
       setLocalMediaStream(stream);
       setActiveView("messages");
@@ -1054,7 +1086,7 @@ export default function ChatApp() {
     }
     const callId = crypto.randomUUID();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === "video" });
+      const stream = await requestCallMedia({ audio: true, video: mode === "video" });
       localMediaStreamRef.current = stream;
       setLocalMediaStream(stream);
       callIdRef.current = callId;
