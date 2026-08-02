@@ -139,7 +139,7 @@ function LoginScreen({ initialized, onLogin, onSetup }: {
           </label>
           <label className="login-field">
             <span>密码</span>
-            <div><LockKeyhole size={18} /><input value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} type={showPassword ? "text" : "password"} autoComplete={initialized ? "current-password" : "new-password"} placeholder={initialized ? "输入密码" : "设置至少 12 位密码"} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "隐藏密码" : "显示密码"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
+            <div><LockKeyhole size={18} /><input value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} type={showPassword ? "text" : "password"} autoComplete={initialized ? "current-password" : "new-password"} placeholder={initialized ? "输入密码" : "设置至少 6 位密码"} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "隐藏密码" : "显示密码"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
           </label>
           <div className={`login-error ${error ? "visible" : ""}`} role="alert">{error || "占位"}</div>
           <button className="login-submit" disabled={submitting}>{submitting ? "正在验证…" : initialized ? "登录" : "创建管理员账户"}</button>
@@ -780,7 +780,7 @@ export default function ChatApp() {
       return null;
     } catch (error) {
       if (error instanceof Error && error.message === "invalid username") return "账户名需为 3–32 位字母、数字或 ._-";
-      if (error instanceof Error && error.message === "weak password") return "密码至少需要 12 位";
+      if (error instanceof Error && error.message === "weak password") return "密码至少需要 6 位";
       if (error instanceof Error && error.message === "already initialized") {
         setServerInitialized(true);
         return "管理员账户已经创建，请直接登录";
@@ -831,8 +831,8 @@ export default function ChatApp() {
       setUserFormError("显示名称不能为空");
       return;
     }
-    if (password && password.length < 12) {
-      setUserFormError("新密码至少需要 12 位");
+    if (password && password.length < 6) {
+      setUserFormError("新密码至少需要 6 位");
       return;
     }
     setUpdatingUser(true);
@@ -905,8 +905,8 @@ export default function ChatApp() {
       setUserFormError("该用户名已存在");
       return;
     }
-    if (newUserPassword.length < 12) {
-      setUserFormError("初始密码至少需要 12 位");
+    if (newUserPassword.length < 6) {
+      setUserFormError("初始密码至少需要 6 位");
       return;
     }
     setCreatingUser(true);
@@ -1327,7 +1327,7 @@ export default function ChatApp() {
                   <div className="managed-user-edit-grid">
                     <label><span>用户名</span><input value={editingUsername} onChange={(event) => { setEditingUsername(event.target.value); setUserFormError(""); }} autoFocus autoComplete="off" /></label>
                     <label><span>显示名称</span><input value={editingDisplayName} onChange={(event) => { setEditingDisplayName(event.target.value); setUserFormError(""); }} /></label>
-                    <label className="managed-user-password-field"><span>新密码（可选）</span><input value={editingPassword} onChange={(event) => { setEditingPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="留空表示不修改，至少 12 位" autoComplete="new-password" /></label>
+                    <label className="managed-user-password-field"><span>新密码（可选）</span><input value={editingPassword} onChange={(event) => { setEditingPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="留空表示不修改，至少 6 位" autoComplete="new-password" /></label>
                   </div>
                   <p className="managed-user-edit-hint">已有加密聊天记录的用户不能直接修改用户名或密码，需先完成设备迁移。</p>
                   <div className="managed-user-edit-actions"><button type="button" onClick={cancelEditUser}>取消</button><button className="save-user-button" disabled={updatingUser}>{updatingUser ? "保存中…" : "保存"}</button></div>
@@ -1346,7 +1346,7 @@ export default function ChatApp() {
               <div className="user-form-grid">
                 <label><span>用户名</span><input value={newUsername} onChange={(event) => { setNewUsername(event.target.value); setUserFormError(""); }} placeholder="例如 zhangsan" autoComplete="off" /></label>
                 <label><span>显示名称</span><input value={newDisplayName} onChange={(event) => setNewDisplayName(event.target.value)} placeholder="例如 张三" autoComplete="off" /></label>
-                <label className="password-field"><span>初始密码</span><input value={newUserPassword} onChange={(event) => { setNewUserPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="至少 12 位" autoComplete="new-password" /></label>
+                <label className="password-field"><span>初始密码</span><input value={newUserPassword} onChange={(event) => { setNewUserPassword(event.target.value); setUserFormError(""); }} type="password" placeholder="至少 6 位" autoComplete="new-password" /></label>
               </div>
               <p className={`user-form-error ${userFormError ? "visible" : ""}`}>{userFormError || "用户创建后即可从登录页登录"}</p>
               <button className="create-user-button" disabled={creatingUser}>{creatingUser ? "正在创建…" : "创建用户"}</button>
