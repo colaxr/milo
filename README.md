@@ -29,15 +29,18 @@ HTTP 可用于初始化和登录测试。正式使用时请配置 HTTPS；聊天
 ## 后续更新
 
 ```bash
-docker rm -f milo
+docker pull ghcr.io/colaxr/milo:latest
+
+docker rm -f milo 2>/dev/null || true
 
 docker run -d \
-  --pull=always \
   --name milo \
   --restart unless-stopped \
   -p 3000:3000 \
   -v milo-data:/app/data \
   ghcr.io/colaxr/milo:latest
+
+docker image prune -f
 ```
 
-不要删除 `milo-data` 数据卷；账户和记录会继续保留。
+先拉取镜像再替换容器，拉取失败时不会提前中断正在运行的服务。`docker image prune -f` 只清理未被容器使用的悬空镜像，不会删除 `milo-data` 数据卷；账户和记录会继续保留。

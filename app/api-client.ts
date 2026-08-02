@@ -66,6 +66,21 @@ export async function searchRemoteUsers(query: string): Promise<LocalUser[]> {
   return (await api<{ users: LocalUser[] }>(`/api/users?q=${encodeURIComponent(query)}`)).users;
 }
 
+export async function fetchRemoteContacts(): Promise<LocalUser[]> {
+  return (await api<{ contacts: LocalUser[] }>("/api/contacts")).contacts;
+}
+
+export async function addRemoteContact(username: string): Promise<LocalUser> {
+  return (await api<{ contact: LocalUser }>("/api/contacts", {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  })).contact;
+}
+
+export async function deleteRemoteContact(username: string): Promise<void> {
+  await api(`/api/contacts/${encodeURIComponent(username)}`, { method: "DELETE" });
+}
+
 export async function fetchEncryptedRecord(name: string): Promise<EncryptedRecord | null> {
   const result = await api<{ record: { payload: EncryptedRecord } | null }>(`/api/records/${encodeURIComponent(name)}`);
   return result.record?.payload ?? null;

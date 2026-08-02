@@ -26,7 +26,7 @@ test("server-renders the Milo application shell", async () => {
 });
 
 test("keeps SQLite, encrypted storage, auth, and single-container deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout] = await Promise.all([
+  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout, contactsRoute, contactsItemRoute, contactsServer] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
@@ -41,6 +41,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/contacts/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/contacts/[username]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/contacts.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(secureStorage, /AES-GCM/);
@@ -58,6 +61,7 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS users/);
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS sessions/);
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS records/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS contacts/);
   assert.match(sqlite, /idx_sessions_expires_at/);
   assert.match(sqlite, /PRAGMA optimize/);
   assert.match(recordsRoute, /ciphertext/);
@@ -71,6 +75,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(usersItemRoute, /updateUserAccount/);
   assert.match(auth, /USER_HAS_RECORDS/);
   assert.match(apiClient, /searchRemoteUsers/);
+  assert.match(apiClient, /fetchRemoteContacts/);
+  assert.match(apiClient, /addRemoteContact/);
+  assert.match(apiClient, /deleteRemoteContact/);
   assert.match(apiClient, /updateRemoteUser/);
   assert.match(apiClient, /deleteRemoteUser/);
   assert.match(chatApp, /fetchInitializationStatus/);
@@ -81,6 +88,13 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /editingUsername/);
   assert.match(chatApp, /editingPassword/);
   assert.match(chatApp, /addUserContact/);
+  assert.match(chatApp, /fetchRemoteContacts/);
+  assert.match(chatApp, /addRemoteContact/);
+  assert.match(chatApp, /deleteRemoteContact/);
+  assert.match(contactsRoute, /listContacts/);
+  assert.match(contactsRoute, /addContact/);
+  assert.match(contactsItemRoute, /deleteContact/);
+  assert.match(contactsServer, /INSERT OR IGNORE INTO contacts/);
   assert.match(chatApp, /type MainView = "messages" \| "contacts"/);
   assert.match(chatApp, /mobile-account-nav-button/);
   assert.doesNotMatch(chatApp, /activeView === "notifications"|未读通知|通知入口/);
@@ -105,6 +119,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.doesNotMatch(readme, /127\.0\.0\.1:3000/);
   assert.match(readme, /docker run -d/);
   assert.match(readme, /--pull=always/);
+  assert.match(readme, /docker pull ghcr\.io\/colaxr\/milo:latest/);
+  assert.match(readme, /docker image prune -f/);
   assert.match(readme, /docker rm -f milo/);
   assert.match(readme, /milo-data:\/app\/data/);
   assert.match(readme, /创建首个管理员账户/);
@@ -113,5 +129,5 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(layout, /viewportFit: "cover"/);
   assert.match(layout, /userScalable: false/);
   assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);
-  assert.doesNotMatch(readme, /git clone|git pull|docker build|docker pull/);
+  assert.doesNotMatch(readme, /git clone|git pull|docker build/);
 });
