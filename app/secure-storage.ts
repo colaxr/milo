@@ -13,7 +13,21 @@ export type EncryptedRecord = {
   updatedAt: string;
 };
 
+export type EncryptedMessageEnvelope = {
+  version: 1;
+  algorithm: "ECDH-P256-AES-GCM";
+  messageId: string;
+  senderUsername: string;
+  recipientUsername: string;
+  ephemeralPublicKey: JsonWebKey;
+  iv: string;
+  ciphertext: string;
+  createdAt: string;
+};
+
 const REMOTE_AAD_PREFIX = "milo:remote-record:v1:";
+const MESSAGE_AAD_PREFIX = "milo:message:v1:";
+const IDENTITY_KEY_PREFIX = "identity-keypair:";
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 let storageKeyPromise: Promise<CryptoKey> | null = null;
@@ -111,6 +125,41 @@ async function readRemoteKey(username: string): Promise<CryptoKey | undefined> {
   return requestResult(transaction.objectStore(KEY_STORE).get(remoteKeyName(username)));
 }
 
+async function readIdentityKeyPair(username: string): Promise<CryptoKeyPair | undefined> {
+  const database = await openDatabase();
+  const transaction = database.transaction(KEY_STORE, "readonly");
+  return requestResult(transaction.objectStore(KEY_STORE).get(`${IDENTITY_KEY_PREFIX}${username}`));
+}
+
+async function getOrCreateIdentityKeyPair(username: string): Promise<CryptoKeyPair> {
+  const existing = await readIdentityKeyPair(username);
+  if (existing) return existing;
+  const generated = await window.crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveKey"],
+  ) as CryptoKeyPair;
+  const database = await openDatabase();
+  const transaction = database.transaction(KEY_STORE, "readwrite");
+  transaction.objectStore(KEY_STORE).put(generated, `${IDENTITY_KEY_PREFIX}${username}`);
+  await transactionComplete(transaction);
+  return generated;
+}
+
+async function importIdentityPublicKey(publicKey: JsonWebKey): Promise<CryptoKey> {
+  return window.crypto.subtle.importKey(
+    "jwk",
+    publicKey,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+}
+
+function messageAdditionalData(senderUsername: string, recipientUsername: string, messageId: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(`${MESSAGE_AAD_PREFIX}${senderUsername}:${recipientUsername}:${messageId}`);
+}
+
 export function canUseDeviceEncryption(): boolean {
   return window.isSecureContext
     && Boolean(window.crypto?.subtle)
@@ -147,6 +196,69 @@ export async function lockRemoteVault(username: string): Promise<void> {
   const transaction = database.transaction(KEY_STORE, "readwrite");
   transaction.objectStore(KEY_STORE).delete(remoteKeyName(username));
   await transactionComplete(transaction);
+}
+
+export async function getIdentityPublicKey(username: string): Promise<JsonWebKey> {
+  const keyPair = await getOrCreateIdentityKeyPair(username);
+  return window.crypto.subtle.exportKey("jwk", keyPair.publicKey);
+}
+
+export async function encryptMessageEnvelope(
+  senderUsername: string,
+  recipientUsername: string,
+  messageId: string,
+  payload: unknown,
+  recipientPublicKey: JsonWebKey,
+): Promise<EncryptedMessageEnvelope> {
+  const ephemeralKeyPair = await window.crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveKey"],
+  ) as CryptoKeyPair;
+  const recipientKey = await importIdentityPublicKey(recipientPublicKey);
+  const key = await window.crypto.subtle.deriveKey(
+    { name: "ECDH", public: recipientKey },
+    ephemeralKeyPair.privateKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"],
+  );
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await window.crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: messageAdditionalData(senderUsername, recipientUsername, messageId), tagLength: 128 },
+    key,
+    new TextEncoder().encode(JSON.stringify(payload)),
+  );
+  return {
+    version: 1,
+    algorithm: "ECDH-P256-AES-GCM",
+    messageId,
+    senderUsername,
+    recipientUsername,
+    ephemeralPublicKey: await window.crypto.subtle.exportKey("jwk", ephemeralKeyPair.publicKey),
+    iv: bytesToBase64(iv),
+    ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function decryptMessageEnvelope<T>(recipientUsername: string, envelope: EncryptedMessageEnvelope): Promise<T> {
+  if (envelope.recipientUsername !== recipientUsername) throw new Error("Message recipient mismatch");
+  const keyPair = await getOrCreateIdentityKeyPair(recipientUsername);
+  const senderEphemeralKey = await importIdentityPublicKey(envelope.ephemeralPublicKey);
+  const key = await window.crypto.subtle.deriveKey(
+    { name: "ECDH", public: senderEphemeralKey },
+    keyPair.privateKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
+  );
+  const plaintext = await window.crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(envelope.iv), additionalData: messageAdditionalData(envelope.senderUsername, envelope.recipientUsername, envelope.messageId), tagLength: 128 },
+    key,
+    base64ToBytes(envelope.ciphertext),
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
 
 function remoteAdditionalData(username: string, recordName: string): Uint8Array<ArrayBuffer> {

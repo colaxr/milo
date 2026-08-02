@@ -1,5 +1,5 @@
 import type { LocalUser } from "./local-auth";
-import type { EncryptedRecord } from "./secure-storage";
+import type { EncryptedMessageEnvelope, EncryptedRecord } from "./secure-storage";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -79,6 +79,22 @@ export async function addRemoteContact(username: string): Promise<LocalUser> {
 
 export async function deleteRemoteContact(username: string): Promise<void> {
   await api(`/api/contacts/${encodeURIComponent(username)}`, { method: "DELETE" });
+}
+
+export async function registerRemoteIdentityKey(publicKey: JsonWebKey): Promise<void> {
+  await api("/api/identity-key", { method: "PUT", body: JSON.stringify({ publicKey }) });
+}
+
+export async function fetchRemoteIdentityKey(username: string): Promise<JsonWebKey> {
+  return (await api<{ publicKey: JsonWebKey }>(`/api/identity-key/${encodeURIComponent(username)}`)).publicKey;
+}
+
+export async function fetchRemoteMessages(): Promise<EncryptedMessageEnvelope[]> {
+  return (await api<{ messages: EncryptedMessageEnvelope[] }>("/api/messages?limit=100")).messages;
+}
+
+export async function sendRemoteMessage(envelope: EncryptedMessageEnvelope): Promise<void> {
+  await api("/api/messages", { method: "POST", body: JSON.stringify({ envelope }) });
 }
 
 export async function fetchEncryptedRecord(name: string): Promise<EncryptedRecord | null> {

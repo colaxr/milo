@@ -67,6 +67,27 @@ function initialize(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_contacts_contact_username
     ON contacts(contact_username)
   `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS identity_keys (
+      username TEXT PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
+      public_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT
+  `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      sender_username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      recipient_username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      envelope TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_recipient_created_at
+    ON messages(recipient_username, created_at)
+  `);
   database.exec("PRAGMA optimize");
 }
 
