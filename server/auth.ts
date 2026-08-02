@@ -68,7 +68,7 @@ export async function createUserDocument(
 ): Promise<UserDocument> {
   const normalized = normalizeUsername(username);
   if (!/^[a-z0-9_.-]{3,32}$/.test(normalized)) throw new Error("INVALID_USERNAME");
-  if (password.length < 12) throw new Error("WEAK_PASSWORD");
+  if (password.length < 6) throw new Error("WEAK_PASSWORD");
   const passwordSalt = randomBytes(16);
   const hash = await passwordHash(password, passwordSalt);
   return {
@@ -149,7 +149,7 @@ export async function updateUserAccount(
 
   const nextUsername = normalizeUsername(input.newUsername ?? normalized);
   if (!/^[a-z0-9_.-]{3,32}$/.test(nextUsername)) throw new Error("INVALID_USERNAME");
-  if (typeof input.password === "string" && input.password.length > 0 && input.password.length < 12) throw new Error("WEAK_PASSWORD");
+  if (typeof input.password === "string" && input.password.length > 0 && input.password.length < 6) throw new Error("WEAK_PASSWORD");
   const nextDisplayName = input.displayName?.trim() || user.displayName || nextUsername;
   const database = getDatabase();
   const records = database.prepare("SELECT COUNT(*) AS count FROM records WHERE username = ?").get(normalized) as { count: number };
