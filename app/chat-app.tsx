@@ -171,6 +171,13 @@ function messageSendError(error: unknown): string {
   return "消息发送失败，请稍后重试";
 }
 
+function callCapabilityError(): string | null {
+  if (!window.isSecureContext) return "通话需要 HTTPS，请使用 HTTPS 域名打开";
+  if (!navigator.mediaDevices?.getUserMedia) return "当前页面没有麦克风/摄像头接口，请用外部 Chrome 或 Edge 打开";
+  if (typeof window.RTCPeerConnection !== "function") return "当前浏览器没有 WebRTC 接口，请升级 Chrome、Edge 或 Firefox";
+  return null;
+}
+
 function LoginScreen({ initialized, onLogin, onSetup }: {
   initialized: boolean;
   onLogin: (username: string, password: string) => Promise<string | null>;
@@ -466,6 +473,11 @@ export default function ChatApp() {
     const pending = incomingCallRef.current;
     if (!pending || !currentUser || !deviceEncryptionEnabled) {
       setToast("请使用 HTTPS 后再接听通话");
+      return;
+    }
+    const capabilityError = callCapabilityError();
+    if (capabilityError) {
+      setToast(capabilityError);
       return;
     }
     try {
@@ -1035,8 +1047,9 @@ export default function ChatApp() {
       setToast("请使用 HTTPS 后再开始通话");
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
-      setToast("当前浏览器不支持实时通话");
+    const capabilityError = callCapabilityError();
+    if (capabilityError) {
+      setToast(capabilityError);
       return;
     }
     const callId = crypto.randomUUID();
