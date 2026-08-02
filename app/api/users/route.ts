@@ -1,16 +1,15 @@
-import { createUserDocument, insertUser, isUniqueConstraintError, listUsers, sessionUser, toPublicUser, type UserDocument } from "../../../server/auth";
+import { createUserDocument, insertUser, isUniqueConstraintError, listUsers, searchUsers, sessionUser, toPublicUser } from "../../../server/auth";
 import { apiError, json } from "../../../server/responses";
 
 export const dynamic = "force-dynamic";
 
-async function requireAdmin(request: Request): Promise<UserDocument | null> {
-  const user = await sessionUser(request);
-  return user?.role === "admin" ? user : null;
-}
-
 export async function GET(request: Request): Promise<Response> {
   try {
-    if (!await requireAdmin(request)) return apiError("forbidden", 403);
+    const user = await sessionUser(request);
+    if (!user) return apiError("unauthorized", 401);
+    const query = new URL(request.url).searchParams.get("q");
+    if (query !== null) return json({ users: searchUsers(query, user.username).map(toPublicUser) });
+    if (user.role !== "admin") return apiError("forbidden", 403);
     return json({ users: listUsers().map(toPublicUser) });
   } catch {
     return apiError("users unavailable", 503);
@@ -19,7 +18,8 @@ export async function GET(request: Request): Promise<Response> {
 
 export async function POST(request: Request): Promise<Response> {
   try {
-    if (!await requireAdmin(request)) return apiError("forbidden", 403);
+    const admin = await sessionUser(request);
+    if (!admin || admin.role !== "admin") return apiError("forbidden", 403);
     const body = await request.json() as { username?: unknown; displayName?: unknown; password?: unknown };
     if (typeof body.username !== "string" || typeof body.displayName !== "string" || typeof body.password !== "string") {
       return apiError("invalid user", 400);

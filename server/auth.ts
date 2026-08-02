@@ -127,6 +127,32 @@ export function listUsers(): UserDocument[] {
   return rows.map(fromRow);
 }
 
+export function searchUsers(query: string, excludeUsername?: string): UserDocument[] {
+  const normalized = normalizeUsername(query);
+  if (!/^[a-z0-9_.-]{3,32}$/.test(normalized)) return [];
+  const rows = getDatabase().prepare(`
+    SELECT * FROM users
+    WHERE username = ? AND username <> ?
+    ORDER BY created_at ASC
+    LIMIT 10
+  `).all(normalized, normalizeUsername(excludeUsername ?? "")) as UserRow[];
+  return rows.map(fromRow);
+}
+
+export function updateUserDisplayName(username: string, displayName: string): UserDocument | null {
+  const normalized = normalizeUsername(username);
+  const user = findUser(normalized);
+  if (!user) return null;
+  const nextDisplayName = displayName.trim() || normalized;
+  getDatabase().prepare("UPDATE users SET display_name = ? WHERE username = ?").run(nextDisplayName, normalized);
+  return findUser(normalized);
+}
+
+export function deleteUser(username: string): boolean {
+  const result = getDatabase().prepare("DELETE FROM users WHERE username = ?").run(normalizeUsername(username));
+  return result.changes > 0;
+}
+
 function findUser(username: string): UserDocument | null {
   const row = getDatabase().prepare("SELECT * FROM users WHERE username = ?").get(normalizeUsername(username)) as UserRow | undefined;
   return row ? fromRow(row) : null;

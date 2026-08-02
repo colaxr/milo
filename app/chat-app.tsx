@@ -8,6 +8,7 @@ import {
   CheckCheck,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   CircleUserRound,
   Cloud,
   Copy,
@@ -40,7 +41,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { createRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, setupRemote } from "./api-client";
+import { createRemoteUser, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, searchRemoteUsers, setupRemote, updateRemoteUser } from "./api-client";
 import { canUseDeviceEncryption, decryptRemoteRecord, encryptRemoteRecord, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
@@ -86,6 +87,23 @@ function removeLegacyDemoConversations(conversations: Conversation[]) {
 }
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
+const conversationColors = ["#415d7d", "#7b9ad8", "#8f86c3", "#c886a8", "#7c9b8a"];
+
+function conversationFromUser(user: LocalUser): Conversation {
+  const colorIndex = Array.from(user.username).reduce((total, character) => total + character.charCodeAt(0), 0) % conversationColors.length;
+  return {
+    id: user.username,
+    name: user.displayName,
+    handle: `@${user.username}`,
+    initials: user.displayName.slice(0, 1).toUpperCase(),
+    color: conversationColors[colorIndex],
+    online: false,
+    unread: 0,
+    lastSeen: "刚刚加入",
+    messages: [],
+  };
+}
+
 function LoginScreen({ initialized, onLogin, onSetup }: {
   initialized: boolean;
   onLogin: (username: string, password: string) => Promise<string | null>;
@@ -154,6 +172,11 @@ export default function ChatApp() {
   const [users, setUsers] = useState<LocalUser[]>([]);
   const [currentUser, setCurrentUser] = useState<LocalUser | null>(null);
   const [userManagerOpen, setUserManagerOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<string | null>(null);
+  const [editingDisplayName, setEditingDisplayName] = useState("");
+  const [updatingUser, setUpdatingUser] = useState(false);
+  const [deleteUserTarget, setDeleteUserTarget] = useState<LocalUser | null>(null);
+  const [deletingUser, setDeletingUser] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [newDisplayName, setNewDisplayName] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
@@ -167,6 +190,10 @@ export default function ChatApp() {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [newChatOpen, setNewChatOpen] = useState(false);
+  const [newChatQuery, setNewChatQuery] = useState("");
+  const [newChatResults, setNewChatResults] = useState<LocalUser[]>([]);
+  const [searchingUsers, setSearchingUsers] = useState(false);
+  const [newChatSearchError, setNewChatSearchError] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [openSwipeId, setOpenSwipeId] = useState<string | null>(null);
   const [swipeGesture, setSwipeGesture] = useState<{ id: string; startX: number; offset: number; base: number } | null>(null);
@@ -300,6 +327,36 @@ export default function ChatApp() {
     const timer = window.setTimeout(() => setToast(""), 1800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!newChatOpen) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const normalized = normalizeUsername(newChatQuery);
+      if (!/^[a-z0-9_.-]{3,32}$/.test(normalized)) {
+        setNewChatResults([]);
+        setNewChatSearchError("");
+        setSearchingUsers(false);
+        return;
+      }
+      setSearchingUsers(true);
+      setNewChatSearchError("");
+      void searchRemoteUsers(normalized).then((results) => {
+        if (cancelled) return;
+        setNewChatResults(results);
+        setSearchingUsers(false);
+      }).catch(() => {
+        if (cancelled) return;
+        setNewChatResults([]);
+        setSearchingUsers(false);
+        setNewChatSearchError("搜索失败，请稍后重试");
+      });
+    }, 240);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [newChatOpen, newChatQuery]);
 
   useEffect(() => {
     if (!actionMessageId) return;
@@ -743,6 +800,71 @@ export default function ChatApp() {
     setAuthenticated(false);
   }
 
+  function beginEditUser(user: LocalUser) {
+    setEditingUser(user.username);
+    setEditingDisplayName(user.displayName);
+    setUserFormError("");
+  }
+
+  function cancelEditUser() {
+    setEditingUser(null);
+    setEditingDisplayName("");
+  }
+
+  async function saveUserEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!editingUser || currentUser?.role !== "admin") return;
+    const displayName = editingDisplayName.trim();
+    if (!displayName) {
+      setUserFormError("显示名称不能为空");
+      return;
+    }
+    setUpdatingUser(true);
+    setUserFormError("");
+    try {
+      const updated = await updateRemoteUser(editingUser, { displayName });
+      setUsers((items) => items.map((user) => user.username === updated.username ? updated : user));
+      cancelEditUser();
+      setToast(`用户 ${updated.username} 已更新`);
+    } catch {
+      setUserFormError("用户更新失败，请重试");
+    } finally {
+      setUpdatingUser(false);
+    }
+  }
+
+  async function confirmDeleteUser() {
+    if (!deleteUserTarget || currentUser?.role !== "admin") return;
+    setDeletingUser(true);
+    try {
+      await deleteRemoteUser(deleteUserTarget.username);
+      setUsers((items) => items.filter((user) => user.username !== deleteUserTarget.username));
+      if (editingUser === deleteUserTarget.username) cancelEditUser();
+      setToast(`用户 ${deleteUserTarget.username} 已删除`);
+      setDeleteUserTarget(null);
+    } catch {
+      setUserFormError("用户删除失败，请重试");
+    } finally {
+      setDeletingUser(false);
+    }
+  }
+
+  function openUserConversation(user: LocalUser) {
+    setActiveView("messages");
+    setActiveId(user.username);
+    setMobileChatOpen(true);
+    setDetailsOpen(false);
+    setNewChatOpen(false);
+    setNewChatQuery("");
+    setNewChatResults([]);
+    setNewChatSearchError("");
+    setConversations((items) => {
+      const existing = items.some((conversation) => conversation.id === user.username);
+      const next = existing ? items : [...items, conversationFromUser(user)];
+      return next.map((item) => item.id === user.username ? { ...item, unread: 0 } : item);
+    });
+  }
+
   async function addUser(event: FormEvent) {
     event.preventDefault();
     if (currentUser?.role !== "admin") return;
@@ -868,7 +990,7 @@ export default function ChatApp() {
             <h1>{activeView === "messages" ? "消息" : activeView === "contacts" ? "联系人" : "通知"}</h1>
           </div>
           <div className="conversation-heading-actions">
-            {activeView !== "notifications" && <button className="round-button warm" onClick={() => setNewChatOpen(true)} aria-label="发起新对话"><Plus size={20} /></button>}
+            {activeView !== "notifications" && <button className="round-button warm" onClick={() => { setNewChatOpen(true); setNewChatQuery(""); setNewChatResults([]); setNewChatSearchError(""); }} aria-label="发起新对话"><Plus size={20} /></button>}
             <button className="mobile-account-trigger" onClick={() => setAccountOpen(true)} aria-label="打开账户菜单"><span className="self-avatar"><SelfAvatarContent avatar={selfAvatar} size={34} fallback={selfInitial} /></span></button>
           </div>
         </header>
@@ -1057,7 +1179,7 @@ export default function ChatApp() {
             <span><MessageCircleMore size={32} /></span>
             <strong>暂无对话</strong>
             <p>输入完整用户名，开始一段新对话</p>
-            <button onClick={() => setNewChatOpen(true)}><Plus size={17} /> 新建对话</button>
+            <button onClick={() => { setNewChatOpen(true); setNewChatQuery(""); setNewChatResults([]); setNewChatSearchError(""); }}><Plus size={17} /> 新建对话</button>
           </div>
         )}
       </section>
@@ -1152,24 +1274,36 @@ export default function ChatApp() {
       )}
 
       {newChatOpen && (
-        <div className="modal-backdrop" onMouseDown={() => setNewChatOpen(false)}>
+        <div className="modal-backdrop" onMouseDown={() => { setNewChatOpen(false); setNewChatQuery(""); setNewChatResults([]); setNewChatSearchError(""); }}>
           <section className="new-chat-card" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><p className="eyebrow">NEW MESSAGE</p><h2>发起新对话</h2></div><button onClick={() => setNewChatOpen(false)}><X size={18} /></button></div>
-            <label className="search-box"><Search size={17} /><input autoFocus placeholder="搜索用户名" /></label>
-            <div className="user-search-empty">
-              <Search size={24} />
-              <strong>输入完整用户名开始搜索</strong>
-              <p>我们不会推荐联系人或展示可能认识的人。</p>
-            </div>
+            <div className="modal-head"><div><p className="eyebrow">NEW MESSAGE</p><h2>发起新对话</h2></div><button onClick={() => { setNewChatOpen(false); setNewChatQuery(""); setNewChatResults([]); setNewChatSearchError(""); }}><X size={18} /></button></div>
+            <label className="search-box"><Search size={17} /><input autoFocus value={newChatQuery} onChange={(event) => { setNewChatQuery(event.target.value); setNewChatSearchError(""); }} placeholder="输入完整用户名" /></label>
+            {searchingUsers && <div className="user-search-empty"><Search size={24} /><strong>正在搜索…</strong></div>}
+            {!searchingUsers && newChatSearchError && <div className="user-search-empty"><Search size={24} /><strong>{newChatSearchError}</strong></div>}
+            {!searchingUsers && !newChatSearchError && newChatQuery.trim().length < 3 && <div className="user-search-empty"><Search size={24} /><strong>输入完整用户名开始搜索</strong><p>我们不会推荐联系人或展示可能认识的人。</p></div>}
+            {!searchingUsers && !newChatSearchError && newChatQuery.trim().length >= 3 && newChatResults.length === 0 && <div className="user-search-empty"><Search size={24} /><strong>没有找到这个用户</strong><p>请确认用户名拼写。</p></div>}
+            {!searchingUsers && newChatResults.length > 0 && <div className="user-search-results">{newChatResults.map((user) => <button key={user.username} className="user-search-result" onClick={() => openUserConversation(user)}><span className="user-search-result-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><span className="user-search-result-copy"><strong>{user.displayName}</strong><small>@{user.username}</small></span><ChevronRight size={16} /></button>)}</div>}
           </section>
         </div>
       )}
       {userManagerOpen && currentUser?.role === "admin" && (
         <div className="modal-backdrop" onMouseDown={() => setUserManagerOpen(false)}>
           <section className="user-manager-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><p className="eyebrow">ADMIN</p><h2>用户管理</h2></div><button onClick={() => setUserManagerOpen(false)} aria-label="关闭用户管理"><X size={18} /></button></div>
+            <div className="modal-head"><div><p className="eyebrow">ADMIN</p><h2>用户管理</h2></div><button onClick={() => { setUserManagerOpen(false); cancelEditUser(); }} aria-label="关闭用户管理"><X size={18} /></button></div>
             <div className="managed-user-list">
-              {users.map((user) => <div key={user.username} className="managed-user-row"><span className="managed-user-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><span><strong>{user.displayName}</strong><small>@{user.username} · {user.role === "admin" ? "管理员" : "普通用户"}</small></span><time>{new Date(user.createdAt).toLocaleDateString("zh-CN")}</time></div>)}
+              {users.map((user) => editingUser === user.username ? (
+                <form key={user.username} className="managed-user-edit" onSubmit={saveUserEdit}>
+                  <label><span>显示名称</span><input value={editingDisplayName} onChange={(event) => { setEditingDisplayName(event.target.value); setUserFormError(""); }} autoFocus /></label>
+                  <div><button type="button" onClick={cancelEditUser}>取消</button><button className="save-user-button" disabled={updatingUser}>{updatingUser ? "保存中…" : "保存"}</button></div>
+                </form>
+              ) : (
+                <div key={user.username} className="managed-user-row">
+                  <span className="managed-user-avatar">{user.displayName.slice(0, 1).toUpperCase()}</span>
+                  <span><strong>{user.displayName}</strong><small>@{user.username} · {user.role === "admin" ? "管理员" : "普通用户"}</small></span>
+                  <time>{new Date(user.createdAt).toLocaleDateString("zh-CN")}</time>
+                  {user.username !== currentUser?.username && <span className="managed-user-actions"><button type="button" onClick={() => beginEditUser(user)} aria-label={`编辑 ${user.username}`}><Pencil size={14} /></button><button type="button" className="danger" onClick={() => setDeleteUserTarget(user)} aria-label={`删除 ${user.username}`}><Trash2 size={14} /></button></span>}
+                </div>
+              ))}
             </div>
             <form className="add-user-form" onSubmit={addUser}>
               <h3><UserPlus size={17} /> 添加新用户</h3>
@@ -1181,6 +1315,16 @@ export default function ChatApp() {
               <p className={`user-form-error ${userFormError ? "visible" : ""}`}>{userFormError || "用户创建后即可从登录页登录"}</p>
               <button className="create-user-button" disabled={creatingUser}>{creatingUser ? "正在创建…" : "创建用户"}</button>
             </form>
+          </section>
+        </div>
+      )}
+      {deleteUserTarget && (
+        <div className="modal-backdrop" onMouseDown={() => !deletingUser && setDeleteUserTarget(null)}>
+          <section className="confirm-card" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="confirm-icon"><Trash2 size={21} /></div>
+            <h2>删除用户？</h2>
+            <p>用户 @{deleteUserTarget.username}、登录会话及其加密记录都会被删除，此操作无法撤销。</p>
+            <div><button onClick={() => setDeleteUserTarget(null)} disabled={deletingUser}>取消</button><button className="confirm-danger" onClick={() => void confirmDeleteUser()} disabled={deletingUser}>{deletingUser ? "删除中…" : "确认删除"}</button></div>
           </section>
         </div>
       )}
