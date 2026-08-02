@@ -103,6 +103,10 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /sendRemoteMessage/);
   assert.match(chatApp, /decryptMessageEnvelope/);
   assert.match(chatApp, /registerIdentityKeyForUser/);
+  assert.match(chatApp, /RTCPeerConnection/);
+  assert.match(chatApp, /getUserMedia/);
+  assert.match(chatApp, /call-offer/);
+  assert.match(chatApp, /acceptIncomingCall/);
   assert.match(contactsRoute, /listContacts/);
   assert.match(contactsRoute, /addContact/);
   assert.match(contactsItemRoute, /deleteContact/);
