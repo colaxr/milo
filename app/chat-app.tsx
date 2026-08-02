@@ -77,7 +77,7 @@ type Conversation = {
   messages: Message[];
 };
 
-type MainView = "messages" | "contacts" | "notifications";
+type MainView = "messages" | "contacts";
 
 const initialConversations: Conversation[] = [];
 const legacyDemoConversationIds = new Set(["lin", "zhou", "chen", "tang", "lu"]);
@@ -407,8 +407,9 @@ export default function ChatApp() {
     });
   }, [conversations, query]);
 
-  const notificationConversations = conversations.filter((item) => item.unread > 0 && !item.archived);
-  const unreadTotal = notificationConversations.reduce((total, item) => total + item.unread, 0);
+  const unreadTotal = conversations
+    .filter((item) => item.unread > 0 && !item.archived)
+    .reduce((total, item) => total + item.unread, 0);
 
   const displayedMessages = useMemo(() => {
     if (!active) return [];
@@ -991,13 +992,11 @@ export default function ChatApp() {
       <aside className="rail" aria-label="主导航">
         <div className="brand-mark">M</div>
         <nav>
-          <button className={`rail-button ${activeView === "messages" ? "active" : ""}`} onClick={() => selectMainView("messages")} aria-label="消息" aria-pressed={activeView === "messages"}><MessageCircleMore size={20} /></button>
+          <button className={`rail-button ${activeView === "messages" ? "active" : ""}`} onClick={() => selectMainView("messages")} aria-label="消息" aria-pressed={activeView === "messages"}><MessageCircleMore size={20} />{unreadTotal > 0 && <span className="tiny-badge">{Math.min(unreadTotal, 99)}</span>}</button>
           <button className={`rail-button ${activeView === "contacts" ? "active" : ""}`} onClick={() => selectMainView("contacts")} aria-label="联系人" aria-pressed={activeView === "contacts"}><UsersRound size={20} /></button>
-          <button className={`rail-button ${activeView === "notifications" ? "active" : ""}`} onClick={() => selectMainView("notifications")} aria-label="通知" aria-pressed={activeView === "notifications"}><Bell size={20} />{unreadTotal > 0 && <span className="tiny-badge">{Math.min(unreadTotal, 99)}</span>}</button>
-        </nav>
-        <div className="rail-bottom">
-          <button className="self-avatar" onClick={() => setAccountOpen((value) => !value)} aria-label="打开账户菜单"><SelfAvatarContent avatar={selfAvatar} size={34} fallback={selfInitial} /></button>
-          {accountOpen && (
+          <div className="rail-account-entry">
+            <button className={`rail-button rail-account-button ${accountOpen ? "active" : ""}`} onClick={() => setAccountOpen((value) => !value)} aria-label="我，打开账户菜单" aria-pressed={accountOpen}><span className="self-avatar"><SelfAvatarContent avatar={selfAvatar} size={34} fallback={selfInitial} /></span></button>
+            {accountOpen && (
             <div className="account-menu">
               <div className="account-summary"><span className="self-avatar large"><SelfAvatarContent avatar={selfAvatar} size={40} fallback={selfInitial} /></span><div><strong>{currentUser?.displayName}</strong><small>@{currentUser?.username}</small></div></div>
               <div className="admin-chip"><ShieldCheck size={13} /> {currentUser?.role === "admin" ? "管理员账户" : "普通用户"}</div>
@@ -1007,28 +1006,26 @@ export default function ChatApp() {
               {selfAvatar && <button onClick={resetSelfAvatar}><Undo2 size={16} /> 恢复默认头像</button>}
               <button className="logout" onClick={logout}><LogOut size={16} /> 退出登录</button>
             </div>
-          )}
-        </div>
+            )}
+          </div>
+        </nav>
       </aside>
 
       <section className={`conversation-panel ${mobileChatOpen ? "mobile-hidden" : ""}`}>
         <header className="conversation-heading">
           <div>
             <p className="eyebrow">MILO</p>
-            <h1>{activeView === "messages" ? "消息" : activeView === "contacts" ? "联系人" : "通知"}</h1>
+            <h1>{activeView === "messages" ? "消息" : "联系人"}</h1>
           </div>
           <div className="conversation-heading-actions">
-            {activeView !== "notifications" && <button className="round-button warm" onClick={() => { setNewChatOpen(true); setNewChatQuery(""); setNewChatResults([]); setNewChatSearchError(""); }} aria-label="发起新对话"><Plus size={20} /></button>}
-            <button className="mobile-account-trigger" onClick={() => setAccountOpen(true)} aria-label="打开账户菜单"><span className="self-avatar"><SelfAvatarContent avatar={selfAvatar} size={34} fallback={selfInitial} /></span></button>
+            <button className="round-button warm" onClick={() => { setNewChatOpen(true); setNewChatQuery(""); setNewChatResults([]); setNewChatSearchError(""); }} aria-label="发起新对话"><Plus size={20} /></button>
           </div>
         </header>
-        {activeView !== "notifications" && (
-          <label className="search-box">
-            <Search size={17} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={activeView === "messages" ? "搜索联系人或消息" : "搜索联系人"} />
-            {query && <button onClick={() => setQuery("")} aria-label="清除搜索"><X size={15} /></button>}
-          </label>
-        )}
+        <label className="search-box">
+          <Search size={17} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={activeView === "messages" ? "搜索联系人或消息" : "搜索联系人"} />
+          {query && <button onClick={() => setQuery("")} aria-label="清除搜索"><X size={15} /></button>}
+        </label>
 
         {activeView === "messages" && <>
           <div className="list-label"><span>{showArchived ? "已归档" : "最近对话"}</span><button onClick={() => setShowArchived((value) => !value)}>{showArchived ? "返回" : "全部"} <ChevronDown size={13} /></button></div>
@@ -1079,18 +1076,10 @@ export default function ChatApp() {
           </div>
         </>}
 
-        {activeView === "notifications" && <>
-          <div className="list-label"><span>未读通知</span><span>{unreadTotal} 条</span></div>
-          <div className="notification-list">
-            {notificationConversations.map((person) => <button key={person.id} className="notification-row" onClick={() => openConversationFromView(person.id)}><span className="notification-icon"><Bell size={17} /></span><span><strong>{person.name} 发来 {person.unread} 条新消息</strong><small>{person.messages.at(-1)?.body || "点击查看对话"}</small></span><time>{person.messages.at(-1)?.time}</time></button>)}
-            {notificationConversations.length === 0 && <div className="empty-search"><Bell size={24} /><p>暂时没有新通知</p></div>}
-          </div>
-        </>}
-
         <nav className="mobile-main-nav" aria-label="移动端主导航">
-          <button className={activeView === "messages" ? "active" : ""} onClick={() => selectMainView("messages")}><MessageCircleMore size={20} /><span>消息</span></button>
+          <button className={activeView === "messages" ? "active" : ""} onClick={() => selectMainView("messages")}><MessageCircleMore size={20} /><span>消息</span>{unreadTotal > 0 && <b>{Math.min(unreadTotal, 99)}</b>}</button>
           <button className={activeView === "contacts" ? "active" : ""} onClick={() => selectMainView("contacts")}><UsersRound size={20} /><span>联系人</span></button>
-          <button className={activeView === "notifications" ? "active" : ""} onClick={() => selectMainView("notifications")}><Bell size={20} /><span>通知</span>{unreadTotal > 0 && <b>{Math.min(unreadTotal, 99)}</b>}</button>
+          <button className={`mobile-account-nav-button ${accountOpen ? "active" : ""}`} onClick={() => setAccountOpen(true)} aria-label="我，打开账户菜单" aria-pressed={accountOpen}><span className="self-avatar mobile-nav-avatar"><SelfAvatarContent avatar={selfAvatar} size={34} fallback={selfInitial} /></span><span>我</span></button>
         </nav>
       </section>
 

@@ -81,6 +81,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /editingUsername/);
   assert.match(chatApp, /editingPassword/);
   assert.match(chatApp, /addUserContact/);
+  assert.match(chatApp, /type MainView = "messages" \| "contacts"/);
+  assert.match(chatApp, /mobile-account-nav-button/);
+  assert.doesNotMatch(chatApp, /activeView === "notifications"|未读通知|通知入口/);
   assert.match(chatApp, /const initialConversations: Conversation\[\] = \[\];/);
   assert.match(chatApp, /removeLegacyDemoConversations/);
   assert.match(chatApp, /暂无对话/);
