@@ -41,8 +41,8 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchSession, fetchUsers, loginRemote, logoutRemote, saveEncryptedRecordRemote, searchRemoteUsers, setupRemote, updateRemoteUser } from "./api-client";
-import { canUseDeviceEncryption, decryptRemoteRecord, encryptRemoteRecord, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault } from "./secure-storage";
+import { addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchRemoteIdentityKey, fetchRemoteMessages, fetchSession, fetchUsers, loginRemote, logoutRemote, registerRemoteIdentityKey, saveEncryptedRecordRemote, searchRemoteUsers, sendRemoteMessage, setupRemote, updateRemoteUser } from "./api-client";
+import { canUseDeviceEncryption, decryptMessageEnvelope, decryptRemoteRecord, encryptMessageEnvelope, encryptRemoteRecord, getIdentityPublicKey, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault, type EncryptedMessageEnvelope } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
 type Message = {
@@ -53,6 +53,8 @@ type Message = {
   status?: "sent" | "read";
   reaction?: string;
   replyTo?: string;
+  senderUsername?: string;
+  recipientUsername?: string;
   edited?: boolean;
   recalled?: boolean;
   attachment?: {
@@ -75,6 +77,13 @@ type Conversation = {
   unread: number;
   lastSeen: string;
   messages: Message[];
+};
+
+type RemoteMessagePayload = {
+  body: string;
+  replyTo?: string;
+  attachment?: Message["attachment"];
+  sentAt: string;
 };
 
 type MainView = "messages" | "contacts";
@@ -107,6 +116,16 @@ function conversationFromUser(user: LocalUser): Conversation {
 function mergeContactConversations(conversations: Conversation[], contacts: LocalUser[]): Conversation[] {
   const existing = new Set(conversations.map((conversation) => conversation.id));
   return [...conversations, ...contacts.filter((contact) => !existing.has(contact.username)).map(conversationFromUser)];
+}
+
+function isRemoteMessagePayload(value: unknown): value is RemoteMessagePayload {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Partial<RemoteMessagePayload>;
+  return typeof payload.body === "string" && typeof payload.sentAt === "string";
+}
+
+function formatMessageTime(value = new Date()): string {
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(value);
 }
 
 function LoginScreen({ initialized, onLogin, onSetup }: {
@@ -234,6 +253,12 @@ export default function ChatApp() {
   const messageLongPressTimerRef = useRef<number | null>(null);
   const contactLongPressTimerRef = useRef<number | null>(null);
   const storageWriteVersionRef = useRef(0);
+  const messagePollInFlightRef = useRef(false);
+
+  async function registerIdentityKeyForUser(username: string): Promise<void> {
+    if (!canUseDeviceEncryption()) return;
+    await registerRemoteIdentityKey(await getIdentityPublicKey(username));
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -247,6 +272,7 @@ export default function ChatApp() {
         if (cancelled) return;
         const encryptionEnabled = canUseDeviceEncryption();
         if (sessionUser && (!encryptionEnabled || await hasRemoteVaultKey(sessionUser.username))) {
+          if (encryptionEnabled) await registerIdentityKeyForUser(sessionUser.username);
           setDeviceEncryptionEnabled(encryptionEnabled);
           setCurrentUser(sessionUser);
           setAuthenticated(true);
@@ -323,6 +349,57 @@ export default function ChatApp() {
       if (storageWriteVersionRef.current === version) setToast("加密消息记录保存失败");
     });
   }, [conversations, currentUser, deviceEncryptionEnabled, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !currentUser || !deviceEncryptionEnabled) return;
+    let cancelled = false;
+    const pollMessages = async () => {
+      if (messagePollInFlightRef.current) return;
+      messagePollInFlightRef.current = true;
+      try {
+        const [envelopes, contacts] = await Promise.all([fetchRemoteMessages(), fetchRemoteContacts()]);
+        if (cancelled) return;
+        for (const envelope of envelopes as EncryptedMessageEnvelope[]) {
+          try {
+            const payload = await decryptMessageEnvelope<RemoteMessagePayload>(currentUser.username, envelope);
+            if (!isRemoteMessagePayload(payload)) continue;
+            const contact = contacts.find((item) => item.username === envelope.senderUsername);
+            setConversations((items) => {
+              const withContact = items.some((item) => item.id === envelope.senderUsername)
+                ? items
+                : contact ? [...items, conversationFromUser(contact)] : items;
+              const target = withContact.find((item) => item.id === envelope.senderUsername);
+              if (!target || target.messages.some((message) => message.id === envelope.messageId)) return withContact;
+              const message: Message = {
+                id: envelope.messageId,
+                body: payload.body,
+                mine: false,
+                time: formatMessageTime(new Date(payload.sentAt)),
+                status: "read",
+                replyTo: payload.replyTo,
+                attachment: payload.attachment,
+                senderUsername: envelope.senderUsername,
+                recipientUsername: currentUser.username,
+              };
+              return withContact.map((item) => item.id === envelope.senderUsername
+                ? { ...item, messages: [...item.messages, message], unread: activeId === envelope.senderUsername ? 0 : item.unread + 1 }
+                : item);
+            });
+          } catch {
+            // Ignore messages that are not addressed to this device or use an unsupported key.
+          }
+        }
+      } finally {
+        messagePollInFlightRef.current = false;
+      }
+    };
+    void pollMessages();
+    const timer = window.setInterval(() => void pollMessages(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeId, currentUser, deviceEncryptionEnabled, hydrated]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -484,7 +561,31 @@ export default function ChatApp() {
     setConversations((items) => items.map((item) => (item.id === id ? { ...item, unread: 0 } : item)));
   }
 
-  function sendMessage(event: FormEvent) {
+  async function deliverOutgoingMessage(recipientId: string, message: Message, successToast?: string): Promise<boolean> {
+    if (!currentUser || !deviceEncryptionEnabled) {
+      setToast("请使用 HTTPS 后再发送加密消息");
+      return false;
+    }
+    try {
+      const recipientPublicKey = await fetchRemoteIdentityKey(recipientId);
+      const envelope = await encryptMessageEnvelope(
+        currentUser.username,
+        recipientId,
+        message.id,
+        { body: message.body, replyTo: message.replyTo, attachment: message.attachment, sentAt: new Date().toISOString() } satisfies RemoteMessagePayload,
+        recipientPublicKey,
+      );
+      await sendRemoteMessage(envelope);
+      setConversations((items) => items.map((item) => item.id === recipientId ? { ...item, messages: [...item.messages, message] } : item));
+      if (successToast) setToast(successToast);
+      return true;
+    } catch (error) {
+      setToast(error instanceof Error && error.message === "recipient device unavailable" ? "对方尚未打开安全设备，请让对方先登录一次" : "消息发送失败，请稍后重试");
+      return false;
+    }
+  }
+
+  async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const body = draft.trim();
     if (!body) return;
@@ -505,25 +606,16 @@ export default function ChatApp() {
       id: crypto.randomUUID(),
       body,
       mine: true,
-      time: new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()),
+      time: formatMessageTime(),
       status: "sent",
       replyTo: replyingTo?.body,
+      senderUsername: currentUser?.username,
+      recipientUsername: activeId,
     };
-    setConversations((items) =>
-      items.map((item) => (item.id === activeId ? { ...item, messages: [...item.messages, message] } : item)),
-    );
+    if (!await deliverOutgoingMessage(activeId, message)) return;
     setDraft("");
     setReplyingTo(null);
     setEmojiOpen(false);
-    window.setTimeout(() => {
-      setConversations((items) =>
-        items.map((item) =>
-          item.id === activeId
-            ? { ...item, messages: item.messages.map((entry) => (entry.id === message.id ? { ...entry, status: "read" } : entry)) }
-            : item,
-        ),
-      );
-    }, 900);
   }
 
   function reactTo(messageId: string) {
@@ -702,14 +794,12 @@ export default function ChatApp() {
         id: crypto.randomUUID(),
         body: "",
         mine: true,
-        time: new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()),
+        time: formatMessageTime(),
         status: "read",
         replyTo: replyingTo?.body,
         attachment: { name: file.name, type: file.type || "application/octet-stream", size: file.size, dataUrl: String(reader.result) },
       };
-      setConversations((items) => items.map((item) => item.id === activeId ? { ...item, messages: [...item.messages, message] } : item));
-      setReplyingTo(null);
-      setToast("附件已发送");
+      void deliverOutgoingMessage(activeId, message, "附件已发送").then((sent) => { if (sent) setReplyingTo(null); });
     };
     reader.readAsDataURL(file);
   }
@@ -737,12 +827,11 @@ export default function ChatApp() {
         reader.onload = () => {
           const message: Message = {
             id: crypto.randomUUID(), body: "", mine: true,
-            time: new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()),
+            time: formatMessageTime(),
             status: "read",
             attachment: { name: `语音消息 ${duration}秒.webm`, type: blob.type, size: blob.size, dataUrl: String(reader.result) },
           };
-          setConversations((items) => items.map((item) => item.id === activeId ? { ...item, messages: [...item.messages, message] } : item));
-          setToast("语音消息已发送");
+          void deliverOutgoingMessage(activeId, message, "语音消息已发送");
         };
         reader.readAsDataURL(blob);
         recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -768,6 +857,7 @@ export default function ChatApp() {
       const user = await loginRemote(normalizeUsername(username), password);
       const encryptionEnabled = canUseDeviceEncryption();
       if (encryptionEnabled) await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
+      if (encryptionEnabled) await registerIdentityKeyForUser(user.username);
       setUsers(user.role === "admin" ? await fetchUsers() : []);
       setHydrated(false);
       setSecureStorageReady(false);
@@ -789,6 +879,7 @@ export default function ChatApp() {
       const user = await setupRemote(normalized, password);
       const encryptionEnabled = canUseDeviceEncryption();
       if (encryptionEnabled) await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
+      if (encryptionEnabled) await registerIdentityKeyForUser(user.username);
       setUsers([user]);
       setHydrated(false);
       setSecureStorageReady(false);

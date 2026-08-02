@@ -153,7 +153,8 @@ export async function updateUserAccount(
   const nextDisplayName = input.displayName?.trim() || user.displayName || nextUsername;
   const database = getDatabase();
   const records = database.prepare("SELECT COUNT(*) AS count FROM records WHERE username = ?").get(normalized) as { count: number };
-  if (records.count > 0 && (nextUsername !== normalized || Boolean(input.password))) throw new Error("USER_HAS_RECORDS");
+  const messages = database.prepare("SELECT COUNT(*) AS count FROM messages WHERE sender_username = ? OR recipient_username = ?").get(normalized, normalized) as { count: number };
+  if ((records.count > 0 || messages.count > 0) && (nextUsername !== normalized || Boolean(input.password))) throw new Error("USER_HAS_RECORDS");
   const duplicate = database.prepare("SELECT 1 AS found FROM users WHERE username = ? AND username <> ?").get(nextUsername, normalized) as { found: number } | undefined;
   if (duplicate) throw new Error("USERNAME_EXISTS");
 
@@ -176,6 +177,7 @@ export async function updateUserAccount(
       `).run(nextUsername, nextDisplayName, user.role, passwordSalt, passwordHashValue, user.vaultSalt, user.vaultIterations, user.createdAt.toISOString());
       database.prepare("UPDATE contacts SET owner_username = ? WHERE owner_username = ?").run(nextUsername, normalized);
       database.prepare("UPDATE contacts SET contact_username = ? WHERE contact_username = ?").run(nextUsername, normalized);
+      database.prepare("UPDATE identity_keys SET username = ? WHERE username = ?").run(nextUsername, normalized);
       database.prepare("UPDATE sessions SET username = ? WHERE username = ?").run(nextUsername, normalized);
       database.prepare("UPDATE records SET username = ? WHERE username = ?").run(nextUsername, normalized);
       if (input.password) database.prepare("DELETE FROM sessions WHERE username = ?").run(nextUsername);

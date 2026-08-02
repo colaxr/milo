@@ -47,6 +47,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   ]);
 
   assert.match(secureStorage, /AES-GCM/);
+  assert.match(secureStorage, /ECDH/);
+  assert.match(secureStorage, /encryptMessageEnvelope/);
+  assert.match(secureStorage, /decryptMessageEnvelope/);
   assert.match(secureStorage, /PBKDF2/);
   assert.match(secureStorage, /window\.isSecureContext/);
   assert.match(secureStorage, /remoteAdditionalData/);
@@ -62,6 +65,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS sessions/);
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS records/);
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS contacts/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS identity_keys/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS messages/);
   assert.match(sqlite, /idx_sessions_expires_at/);
   assert.match(sqlite, /PRAGMA optimize/);
   assert.match(recordsRoute, /ciphertext/);
@@ -74,10 +79,14 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(usersItemRoute, /export async function DELETE/);
   assert.match(usersItemRoute, /updateUserAccount/);
   assert.match(auth, /USER_HAS_RECORDS/);
+  assert.match(auth, /FROM messages WHERE sender_username/);
   assert.match(apiClient, /searchRemoteUsers/);
   assert.match(apiClient, /fetchRemoteContacts/);
   assert.match(apiClient, /addRemoteContact/);
   assert.match(apiClient, /deleteRemoteContact/);
+  assert.match(apiClient, /fetchRemoteMessages/);
+  assert.match(apiClient, /sendRemoteMessage/);
+  assert.match(apiClient, /registerRemoteIdentityKey/);
   assert.match(apiClient, /updateRemoteUser/);
   assert.match(apiClient, /deleteRemoteUser/);
   assert.match(chatApp, /fetchInitializationStatus/);
@@ -91,6 +100,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /fetchRemoteContacts/);
   assert.match(chatApp, /addRemoteContact/);
   assert.match(chatApp, /deleteRemoteContact/);
+  assert.match(chatApp, /sendRemoteMessage/);
+  assert.match(chatApp, /decryptMessageEnvelope/);
+  assert.match(chatApp, /registerIdentityKeyForUser/);
   assert.match(contactsRoute, /listContacts/);
   assert.match(contactsRoute, /addContact/);
   assert.match(contactsItemRoute, /deleteContact/);
