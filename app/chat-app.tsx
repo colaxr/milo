@@ -99,6 +99,7 @@ type IncomingCall = {
   mode: CallMode;
   caller: Conversation;
   offer: RTCSessionDescriptionInit;
+  createdAt: string;
 };
 
 type MainView = "messages" | "contacts";
@@ -112,6 +113,7 @@ function removeLegacyDemoConversations(conversations: Conversation[]) {
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
 const conversationColors = ["#415d7d", "#7b9ad8", "#8f86c3", "#c886a8", "#7c9b8a"];
+const CALL_OFFER_TTL_MS = 90_000;
 const defaultSiteSettings: SiteSettings = {
   brandName: "青屿云盘",
   footerLabel: "© 2026 青屿云盘",
@@ -457,15 +459,17 @@ export default function ChatApp() {
     return conversationFromUser({ username, displayName: username, role: "user", vaultSalt: "", vaultIterations: 1, createdAt: "" });
   }
 
-  async function handleCallSignal(payload: CallSignalPayload, senderUsername: string, contacts: LocalUser[]): Promise<void> {
+  async function handleCallSignal(payload: CallSignalPayload, senderUsername: string, contacts: LocalUser[], createdAt: string): Promise<void> {
     if (payload.kind === "call-offer") {
+      const offerCreatedAt = Date.parse(createdAt);
+      if (!Number.isFinite(offerCreatedAt) || Date.now() - offerCreatedAt > CALL_OFFER_TTL_MS) return;
       if (callIdRef.current || incomingCallRef.current) {
         void sendCallSignal(senderUsername, { kind: "call-busy", callId: payload.callId }).catch(() => undefined);
         return;
       }
       const caller = conversationForCaller(senderUsername, contacts);
       setConversations((items) => items.some((item) => item.id === caller.id) ? items : [...items, caller]);
-      setIncomingCallState({ callId: payload.callId, mode: payload.mode, caller, offer: payload.description });
+      setIncomingCallState({ callId: payload.callId, mode: payload.mode, caller, offer: payload.description, createdAt });
       return;
     }
     const connection = peerConnectionRef.current;
@@ -481,6 +485,8 @@ export default function ChatApp() {
       const isCurrentCall = payload.callId === callIdRef.current;
       const isPendingIncomingCall = payload.callId === incomingCallRef.current?.callId;
       if (!isCurrentCall && !isPendingIncomingCall) {
+        const iceCreatedAt = Date.parse(createdAt);
+        if (!Number.isFinite(iceCreatedAt) || Date.now() - iceCreatedAt > CALL_OFFER_TTL_MS) return;
         const pending = pendingIceCandidatesRef.current.get(payload.callId) ?? [];
         pending.push(payload.candidate);
         pendingIceCandidatesRef.current.set(payload.callId, pending);
@@ -555,6 +561,16 @@ export default function ChatApp() {
     if (pending) void sendCallSignal(pending.caller.id, { kind: "call-reject", callId: pending.callId }).catch(() => undefined);
     setIncomingCallState(null);
   }
+
+  useEffect(() => {
+    if (!incomingCall) return;
+    const createdAt = Date.parse(incomingCall.createdAt);
+    const elapsed = Number.isFinite(createdAt) ? Math.max(0, Date.now() - createdAt) : CALL_OFFER_TTL_MS;
+    const timer = window.setTimeout(() => {
+      if (incomingCallRef.current?.callId === incomingCall.callId) setIncomingCallState(null);
+    }, Math.max(0, CALL_OFFER_TTL_MS - elapsed));
+    return () => window.clearTimeout(timer);
+  }, [incomingCall]);
 
   useEffect(() => {
     let cancelled = false;
@@ -663,7 +679,7 @@ export default function ChatApp() {
             const payload = await decryptMessageEnvelope<RemoteMessagePayload | CallSignalPayload>(currentUser.username, envelope);
             if (isCallSignalPayload(payload)) {
               processedCallSignalsRef.current.add(envelope.messageId);
-              await handleCallSignal(payload, envelope.senderUsername, contacts);
+              await handleCallSignal(payload, envelope.senderUsername, contacts, envelope.createdAt);
               continue;
             }
             if (!isRemoteMessagePayload(payload)) continue;
