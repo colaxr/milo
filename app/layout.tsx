@@ -6,8 +6,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Milo 私信",
-  description: "一个专注、轻盈的本地私信应用。",
+  title: "青屿云盘",
+  description: "青屿云盘",
 };
 
 export const viewport: Viewport = {

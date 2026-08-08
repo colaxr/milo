@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchRemoteIdentityKey, fetchRemoteMessages, fetchSession, fetchUsers, loginRemote, logoutRemote, registerRemoteIdentityKey, saveEncryptedRecordRemote, searchRemoteUsers, sendRemoteMessage, setupRemote, updateRemoteUser } from "./api-client";
+import { addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchRemoteIdentityKey, fetchRemoteMessages, fetchSession, fetchSiteSettings, fetchUsers, loginRemote, logoutRemote, registerRemoteIdentityKey, saveEncryptedRecordRemote, searchRemoteUsers, sendRemoteMessage, setupRemote, updateSiteSettings, updateRemoteUser, type SiteSettings } from "./api-client";
 import { canUseDeviceEncryption, decryptMessageEnvelope, decryptRemoteRecord, encryptMessageEnvelope, encryptRemoteRecord, getIdentityPublicKey, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault, type EncryptedMessageEnvelope } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
@@ -112,6 +112,10 @@ function removeLegacyDemoConversations(conversations: Conversation[]) {
 
 const emojis = ["😊", "😂", "❤️", "👍", "✨", "🥳", "👀", "🤝"];
 const conversationColors = ["#415d7d", "#7b9ad8", "#8f86c3", "#c886a8", "#7c9b8a"];
+const defaultSiteSettings: SiteSettings = {
+  brandName: "青屿云盘",
+  footerLabel: "© 2026 青屿云盘",
+};
 
 function conversationFromUser(user: LocalUser): Conversation {
   const colorIndex = Array.from(user.username).reduce((total, character) => total + character.charCodeAt(0), 0) % conversationColors.length;
@@ -208,8 +212,9 @@ function callCapabilityError(): string | null {
   return null;
 }
 
-function LoginScreen({ initialized, onLogin, onSetup }: {
+function LoginScreen({ initialized, siteSettings, onLogin, onSetup }: {
   initialized: boolean;
+  siteSettings: SiteSettings;
   onLogin: (username: string, password: string) => Promise<string | null>;
   onSetup: (username: string, password: string) => Promise<string | null>;
 }) {
@@ -230,7 +235,7 @@ function LoginScreen({ initialized, onLogin, onSetup }: {
   return (
     <main className="login-screen cloud-login">
       <header className="cloud-header">
-        <div className="cloud-brand"><span><Cloud size={21} /></span><strong>青屿云盘</strong></div>
+        <div className="cloud-brand"><span><Cloud size={21} /></span><strong>{siteSettings.brandName}</strong></div>
       </header>
       <section className="login-form-side">
         <form className="login-card" onSubmit={submitLogin}>
@@ -249,7 +254,7 @@ function LoginScreen({ initialized, onLogin, onSetup }: {
           <button className="login-submit" disabled={submitting}>{submitting ? "正在验证…" : initialized ? "登录" : "创建管理员账户"}</button>
         </form>
       </section>
-      <footer className="cloud-footer"><span>© 2026 青屿云盘</span><span>隐私 · 条款 · 安全</span></footer>
+      <footer className="cloud-footer"><span>{siteSettings.footerLabel}</span><span>隐私 · 条款 · 安全</span></footer>
     </main>
   );
 }
@@ -271,6 +276,7 @@ export default function ChatApp() {
   const [authenticated, setAuthenticated] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [serverInitialized, setServerInitialized] = useState(true);
+  const [siteSettings, setSiteSettings] = useState<SiteSettings>(defaultSiteSettings);
   const [accountOpen, setAccountOpen] = useState(false);
   const [selfAvatar, setSelfAvatar] = useState<string | null>(null);
   const [users, setUsers] = useState<LocalUser[]>([]);
@@ -288,6 +294,10 @@ export default function ChatApp() {
   const [newUserPassword, setNewUserPassword] = useState("");
   const [userFormError, setUserFormError] = useState("");
   const [creatingUser, setCreatingUser] = useState(false);
+  const [siteSettingsBrandDraft, setSiteSettingsBrandDraft] = useState(defaultSiteSettings.brandName);
+  const [siteSettingsFooterDraft, setSiteSettingsFooterDraft] = useState(defaultSiteSettings.footerLabel);
+  const [siteSettingsError, setSiteSettingsError] = useState("");
+  const [savingSiteSettings, setSavingSiteSettings] = useState(false);
   const [activeView, setActiveView] = useState<MainView>("messages");
   const [conversations, setConversations] = useState(initialConversations);
   const [activeId, setActiveId] = useState("");
@@ -551,8 +561,10 @@ export default function ChatApp() {
     void (async () => {
       try {
         const initialized = await fetchInitializationStatus();
+        const remoteSiteSettings = await fetchSiteSettings().catch(() => defaultSiteSettings);
         if (cancelled) return;
         setServerInitialized(initialized);
+        setSiteSettings(remoteSiteSettings);
         if (!initialized) return;
         const sessionUser = await fetchSession();
         if (cancelled) return;
@@ -716,6 +728,10 @@ export default function ChatApp() {
     const timer = window.setTimeout(() => setToast(""), 1800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    document.title = siteSettings.brandName;
+  }, [siteSettings.brandName]);
 
   useEffect(() => {
     if (!newChatOpen) return;
@@ -1237,6 +1253,43 @@ export default function ChatApp() {
     setAuthenticated(false);
   }
 
+  function openUserManager() {
+    setAccountOpen(false);
+    setSiteSettingsBrandDraft(siteSettings.brandName);
+    setSiteSettingsFooterDraft(siteSettings.footerLabel);
+    setSiteSettingsError("");
+    setUserFormError("");
+    setUserManagerOpen(true);
+  }
+
+  async function saveSiteSettings(event: FormEvent) {
+    event.preventDefault();
+    if (currentUser?.role !== "admin") return;
+    const brandName = siteSettingsBrandDraft.trim();
+    const footerLabel = siteSettingsFooterDraft.trim();
+    if (!brandName || brandName.length > 40) {
+      setSiteSettingsError("云盘名称不能为空且不能超过 40 个字符");
+      return;
+    }
+    if (!footerLabel || footerLabel.length > 80) {
+      setSiteSettingsError("左下角标签不能为空且不能超过 80 个字符");
+      return;
+    }
+    setSavingSiteSettings(true);
+    setSiteSettingsError("");
+    try {
+      const updated = await updateSiteSettings({ brandName, footerLabel });
+      setSiteSettings(updated);
+      setSiteSettingsBrandDraft(updated.brandName);
+      setSiteSettingsFooterDraft(updated.footerLabel);
+      setToast("登录页名称和标签已更新");
+    } catch (error) {
+      setSiteSettingsError(error instanceof Error && error.message === "forbidden" ? "只有管理员可以修改登录页设置" : "登录页设置保存失败，请重试");
+    } finally {
+      setSavingSiteSettings(false);
+    }
+  }
+
   function beginEditUser(user: LocalUser) {
     setEditingUser(user.username);
     setEditingUsername(user.username);
@@ -1423,7 +1476,7 @@ export default function ChatApp() {
   }
 
   if (!authenticated) {
-    return <LoginScreen initialized={serverInitialized} onLogin={login} onSetup={setup} />;
+    return <LoginScreen initialized={serverInitialized} siteSettings={siteSettings} onLogin={login} onSetup={setup} />;
   }
 
   return (
@@ -1441,7 +1494,7 @@ export default function ChatApp() {
               <div className="account-summary"><span className="self-avatar large"><SelfAvatarContent avatar={selfAvatar} size={40} fallback={selfInitial} /></span><div><strong>{currentUser?.displayName}</strong><small>@{currentUser?.username}</small></div></div>
               <div className="admin-chip"><ShieldCheck size={13} /> {currentUser?.role === "admin" ? "管理员账户" : "普通用户"}</div>
               {secureStorageReady && <div className="secure-storage-chip"><LockKeyhole size={13} /> 本机记录已加密</div>}
-              {currentUser?.role === "admin" && <button onClick={() => { setAccountOpen(false); setUserManagerOpen(true); }}><UserPlus size={16} /> 用户管理</button>}
+              {currentUser?.role === "admin" && <button onClick={openUserManager}><UserPlus size={16} /> 用户管理</button>}
               <button onClick={() => avatarInputRef.current?.click()}><ImageIcon size={16} /> 更换头像</button>
               {selfAvatar && <button onClick={resetSelfAvatar}><Undo2 size={16} /> 恢复默认头像</button>}
               <button className="logout" onClick={logout}><LogOut size={16} /> 退出登录</button>
@@ -1768,6 +1821,14 @@ export default function ChatApp() {
         <div className="modal-backdrop" onMouseDown={() => setUserManagerOpen(false)}>
           <section className="user-manager-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><p className="eyebrow">ADMIN</p><h2>用户管理</h2></div><button onClick={() => { setUserManagerOpen(false); cancelEditUser(); }} aria-label="关闭用户管理"><X size={18} /></button></div>
+            <form className="site-settings-form" onSubmit={saveSiteSettings}>
+              <div className="site-settings-heading"><div><h3>登录页外观</h3><p>修改左上角云盘名称和左下角标签。</p></div><Cloud size={18} /></div>
+              <div className="site-settings-grid">
+                <label><span>左上角名称</span><input value={siteSettingsBrandDraft} onChange={(event) => { setSiteSettingsBrandDraft(event.target.value); setSiteSettingsError(""); }} maxLength={40} placeholder="例如 青屿云盘" /></label>
+                <label><span>左下角标签</span><input value={siteSettingsFooterDraft} onChange={(event) => { setSiteSettingsFooterDraft(event.target.value); setSiteSettingsError(""); }} maxLength={80} placeholder="例如 © 2026 青屿云盘" /></label>
+              </div>
+              <div className="site-settings-actions"><p className={`site-settings-error ${siteSettingsError ? "visible" : ""}`}>{siteSettingsError || "退出登录后，登录页会使用新文字"}</p><button className="save-site-settings-button" disabled={savingSiteSettings}>{savingSiteSettings ? "保存中…" : "保存登录页设置"}</button></div>
+            </form>
             <div className="managed-user-list">
               {users.map((user) => editingUser === user.username ? (
                 <form key={user.username} className="managed-user-edit" onSubmit={saveUserEdit}>
@@ -1818,7 +1879,7 @@ export default function ChatApp() {
             <div className="account-summary"><span className="self-avatar large"><SelfAvatarContent avatar={selfAvatar} size={40} fallback={selfInitial} /></span><div><strong>{currentUser?.displayName}</strong><small>@{currentUser?.username}</small></div></div>
             <div className="admin-chip"><ShieldCheck size={13} /> {currentUser?.role === "admin" ? "管理员账户" : "普通用户"}</div>
             {secureStorageReady && <div className="secure-storage-chip"><LockKeyhole size={13} /> 本机记录已加密</div>}
-            {currentUser?.role === "admin" && <button onClick={() => { setAccountOpen(false); setUserManagerOpen(true); }}><UserPlus size={17} /> 用户管理</button>}
+            {currentUser?.role === "admin" && <button onClick={openUserManager}><UserPlus size={17} /> 用户管理</button>}
             <button onClick={() => avatarInputRef.current?.click()}><ImageIcon size={17} /> 更换头像</button>
             {selfAvatar && <button onClick={resetSelfAvatar}><Undo2 size={17} /> 恢复默认头像</button>}
             <button className="logout" onClick={logout}><LogOut size={17} /> 退出登录</button>
