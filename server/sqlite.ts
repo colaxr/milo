@@ -85,6 +85,13 @@ function initialize(database: DatabaseSync): void {
     ) STRICT
   `);
   database.exec(`
+    CREATE TABLE IF NOT EXISTS site_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT
+  `);
+  database.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_recipient_created_at
     ON messages(recipient_username, created_at)
   `);

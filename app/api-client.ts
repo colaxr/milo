@@ -1,6 +1,11 @@
 import type { LocalUser } from "./local-auth";
 import type { EncryptedMessageEnvelope, EncryptedRecord } from "./secure-storage";
 
+export type SiteSettings = {
+  brandName: string;
+  footerLabel: string;
+};
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -23,6 +28,17 @@ export async function fetchSession(): Promise<LocalUser | null> {
 
 export async function fetchInitializationStatus(): Promise<boolean> {
   return (await api<{ initialized: boolean }>("/api/auth/status")).initialized;
+}
+
+export async function fetchSiteSettings(): Promise<SiteSettings> {
+  return (await api<{ settings: SiteSettings }>("/api/site-settings")).settings;
+}
+
+export async function updateSiteSettings(settings: SiteSettings): Promise<SiteSettings> {
+  return (await api<{ settings: SiteSettings }>("/api/site-settings", {
+    method: "PATCH",
+    body: JSON.stringify(settings),
+  })).settings;
 }
 
 export async function setupRemote(username: string, password: string): Promise<LocalUser> {

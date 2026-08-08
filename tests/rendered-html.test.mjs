@@ -20,13 +20,13 @@ test("server-renders the Milo application shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Milo/);
+  assert.match(html, /<title>青屿云盘/);
   assert.match(html, /class="session-loading"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 
 test("keeps SQLite, encrypted storage, auth, and single-container deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout, contactsRoute, contactsItemRoute, contactsServer] = await Promise.all([
+  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout, contactsRoute, contactsItemRoute, contactsServer, siteSettingsRoute, siteSettingsServer] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
@@ -44,6 +44,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
     readFile(new URL("../app/api/contacts/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/contacts/[username]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/contacts.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/site-settings/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/site-settings.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(secureStorage, /AES-GCM/);
@@ -67,6 +69,7 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS contacts/);
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS identity_keys/);
   assert.match(sqlite, /CREATE TABLE IF NOT EXISTS messages/);
+  assert.match(sqlite, /CREATE TABLE IF NOT EXISTS site_settings/);
   assert.match(sqlite, /idx_sessions_expires_at/);
   assert.match(sqlite, /PRAGMA optimize/);
   assert.match(recordsRoute, /ciphertext/);
@@ -89,6 +92,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(apiClient, /registerRemoteIdentityKey/);
   assert.match(apiClient, /updateRemoteUser/);
   assert.match(apiClient, /deleteRemoteUser/);
+  assert.match(apiClient, /fetchSiteSettings/);
+  assert.match(apiClient, /updateSiteSettings/);
   assert.match(chatApp, /fetchInitializationStatus/);
   assert.match(chatApp, /setupRemote/);
   assert.match(chatApp, /HTTP 测试模式：已登录/);
@@ -107,10 +112,18 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /getUserMedia/);
   assert.match(chatApp, /call-offer/);
   assert.match(chatApp, /acceptIncomingCall/);
+  assert.match(chatApp, /siteSettingsBrandDraft/);
+  assert.match(chatApp, /siteSettingsFooterDraft/);
+  assert.match(chatApp, /document\.title = siteSettings\.brandName/);
   assert.match(contactsRoute, /listContacts/);
   assert.match(contactsRoute, /addContact/);
   assert.match(contactsItemRoute, /deleteContact/);
   assert.match(contactsServer, /INSERT OR IGNORE INTO contacts/);
+  assert.match(siteSettingsRoute, /getSiteSettings/);
+  assert.match(siteSettingsRoute, /sessionUser/);
+  assert.match(siteSettingsRoute, /export async function PATCH/);
+  assert.match(siteSettingsServer, /DEFAULT_SITE_SETTINGS/);
+  assert.match(siteSettingsServer, /ON CONFLICT\(key\) DO UPDATE/);
   assert.match(chatApp, /type MainView = "messages" \| "contacts"/);
   assert.match(chatApp, /mobile-account-nav-button/);
   assert.doesNotMatch(chatApp, /activeView === "notifications"|未读通知|通知入口/);
