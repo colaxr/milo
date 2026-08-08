@@ -112,6 +112,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /getUserMedia/);
   assert.match(chatApp, /call-offer/);
   assert.match(chatApp, /acceptIncomingCall/);
+  assert.match(chatApp, /CALL_OFFER_TTL_MS/);
+  assert.match(chatApp, /incomingCall\.createdAt/);
   assert.match(chatApp, /siteSettingsBrandDraft/);
   assert.match(chatApp, /siteSettingsFooterDraft/);
   assert.match(chatApp, /document\.title = siteSettings\.brandName/);
