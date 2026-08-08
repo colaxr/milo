@@ -145,7 +145,7 @@ h1, h2, p { margin-top: 0; }
 .message-stack { max-width: min(70%, 570px); display: flex; flex-direction: column; align-items: flex-start; position: relative; }
 .mine .message-stack { align-items: flex-end; }
 .message-bubble { position: relative; border: 1px solid #e4e4e4; padding: 11px 14px; border-radius: 5px 14px 14px 14px; background: #fff; text-align: left; font-size: 13px; line-height: 1.65; cursor: pointer; color: #1f1f1f; user-select: none; -webkit-touch-callout: none; touch-action: pan-y; }
-.mine .message-bubble { border-color: #182f4f; border-radius: 14px 5px 14px 14px; background: #1f3a5f; color: #fff; }
+.mine .message-bubble { border-color: #d7d7d7; border-radius: 14px 5px 14px 14px; background: #fff; color: #1f1f1f; }
 .message-actions { position: absolute; z-index: 3; right: calc(100% + 7px); top: 4px; display: flex; gap: 2px; padding: 3px; border: 1px solid #ebe8e2; border-radius: 8px; background: white; box-shadow: 0 5px 15px rgba(20,23,25,.08); opacity: 1; pointer-events: auto; transition: .16s ease; }
 .theirs .message-actions { left: calc(100% + 7px); right: auto; }
 .message-line:hover .message-actions, .message-actions:focus-within { opacity: 1; pointer-events: auto; }

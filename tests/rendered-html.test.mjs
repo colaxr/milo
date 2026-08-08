@@ -171,3 +171,18 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.doesNotMatch(readme, /Caddy|milo-proxy|chat\.example\.com/);
   assert.doesNotMatch(readme, /git clone|git pull|docker build/);
 });
+
+test("keeps account switching and encrypted record writes isolated", async () => {
+  const [chatApp, globalsCss] = await Promise.all([
+    readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(chatApp, /storageGenerationRef/);
+  assert.match(chatApp, /pendingMessageMutationsRef/);
+  assert.match(chatApp, /消息操作将在网络恢复后自动重试/);
+  assert.match(chatApp, /正在加载加密会话/);
+  assert.match(chatApp, /setConversations\(\[\]\);\s*setActiveId\(""\);/);
+  assert.match(chatApp, /const save = remoteRecordSaveQueueRef\.current\.then\(async \(\) =>/);
+  assert.match(globalsCss, /\.mine \.message-bubble[^\n]*background: #fff;[^\n]*color: #1f1f1f;/);
+});

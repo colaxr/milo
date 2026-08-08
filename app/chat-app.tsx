@@ -94,6 +94,15 @@ type CallSignalPayload =
   | { kind: "call-ice"; callId: string; candidate: RTCIceCandidateInit }
   | { kind: "call-reject" | "call-busy" | "call-end"; callId: string };
 
+type MessageMutationPayload = Exclude<RemoteMessagePayload, { kind: "message" }>;
+
+type PendingMessageMutation = {
+  messageId: string;
+  recipientId: string;
+  payload: MessageMutationPayload;
+  generation: number;
+};
+
 type IncomingCall = {
   callId: string;
   mode: CallMode;
@@ -353,7 +362,12 @@ export default function ChatApp() {
   const contactLongPressTimerRef = useRef<number | null>(null);
   const storageWriteVersionRef = useRef(0);
   const remoteRecordRevisionRef = useRef<number | null>(null);
-  const remoteRecordSaveQueueRef = useRef(Promise.resolve());
+  const remoteRecordSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const storageGenerationRef = useRef(0);
+  const pendingMessageMutationsRef = useRef(new Map<string, PendingMessageMutation>());
+  const mutationFlushInFlightRef = useRef(false);
+  const mutationRetryTimerRef = useRef<number | null>(null);
+  const mutationRetryNotifiedRef = useRef(false);
   const pendingMessageAcksRef = useRef(new Set<string>());
   const messagePollInFlightRef = useRef(false);
   const conversationsRef = useRef(conversations);
@@ -381,6 +395,56 @@ export default function ChatApp() {
     const recipientPublicKey = await fetchRemoteIdentityKey(recipientId);
     const envelope = await encryptMessageEnvelope(currentUser.username, recipientId, messageId, payload, recipientPublicKey);
     await sendRemoteMessage(envelope);
+  }
+
+  function shouldRetryMessageMutation(error: unknown): boolean {
+    const reason = error instanceof Error ? error.message : "";
+    return ["Failed to fetch", "message unavailable", "recipient device unavailable", "identity key not found"].includes(reason);
+  }
+
+  function scheduleMessageMutationRetry(): void {
+    if (mutationRetryTimerRef.current !== null) return;
+    mutationRetryTimerRef.current = window.setTimeout(() => {
+      mutationRetryTimerRef.current = null;
+      void flushMessageMutations();
+    }, 3000);
+  }
+
+  async function flushMessageMutations(): Promise<void> {
+    if (mutationFlushInFlightRef.current || !currentUser || !deviceEncryptionEnabled || !hydrated) return;
+    mutationFlushInFlightRef.current = true;
+    try {
+      for (const [messageId, mutation] of pendingMessageMutationsRef.current) {
+        if (mutation.generation !== storageGenerationRef.current) {
+          pendingMessageMutationsRef.current.delete(messageId);
+          continue;
+        }
+        try {
+          await sendEncryptedPayload(mutation.recipientId, mutation.payload, mutation.messageId);
+          pendingMessageMutationsRef.current.delete(messageId);
+          mutationRetryNotifiedRef.current = false;
+        } catch (error) {
+          if (mutation.generation !== storageGenerationRef.current) {
+            pendingMessageMutationsRef.current.delete(messageId);
+            continue;
+          }
+          if (!shouldRetryMessageMutation(error)) {
+            pendingMessageMutationsRef.current.delete(messageId);
+            setToast(messageSendError(error));
+            continue;
+          }
+          if (!mutationRetryNotifiedRef.current) {
+            setToast("消息操作将在网络恢复后自动重试");
+            mutationRetryNotifiedRef.current = true;
+          }
+          scheduleMessageMutationRetry();
+          break;
+        }
+      }
+    } finally {
+      mutationFlushInFlightRef.current = false;
+      if (pendingMessageMutationsRef.current.size === 0) mutationRetryNotifiedRef.current = false;
+    }
   }
 
   async function sendCallSignal(recipientId: string, payload: CallSignalPayload): Promise<void> {
@@ -617,6 +681,8 @@ export default function ChatApp() {
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
+    const generation = storageGenerationRef.current + 1;
+    storageGenerationRef.current = generation;
     remoteRecordRevisionRef.current = null;
     remoteRecordSaveQueueRef.current = Promise.resolve();
     pendingMessageAcksRef.current.clear();
@@ -659,7 +725,13 @@ export default function ChatApp() {
         setHydrated(true);
         setSecureStorageReady(true);
       } catch {
-        if (!cancelled) setToast("联系人或加密消息记录无法读取，请稍后重试");
+        if (!cancelled) {
+          setConversations([]);
+          setActiveId("");
+          setHydrated(true);
+          setSecureStorageReady(false);
+          setToast("联系人或加密消息记录无法读取，请稍后重试");
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -671,22 +743,25 @@ export default function ChatApp() {
     storageWriteVersionRef.current = version;
     const recordName = `conversations:${currentUser.username}`;
     const pendingMessageIds = [...pendingMessageAcksRef.current];
-    const save = encryptRemoteRecord(currentUser.username, recordName, conversations).then((payload) => {
-      const queued = remoteRecordSaveQueueRef.current.then(async () => {
-        const revision = await saveEncryptedRecordRemote(recordName, payload, remoteRecordRevisionRef.current);
-        remoteRecordRevisionRef.current = revision;
-        if (pendingMessageIds.length > 0) {
-          try {
-            await acknowledgeRemoteMessages(pendingMessageIds);
-            pendingMessageIds.forEach((messageId) => pendingMessageAcksRef.current.delete(messageId));
-          } catch {
-            // Keep the acknowledgements pending so the next successful record save retries them.
-          }
+    const generation = storageGenerationRef.current;
+    const snapshot = conversations;
+    const save = remoteRecordSaveQueueRef.current.then(async () => {
+      if (generation !== storageGenerationRef.current) return;
+      const payload = await encryptRemoteRecord(currentUser.username, recordName, snapshot);
+      if (generation !== storageGenerationRef.current) return;
+      const revision = await saveEncryptedRecordRemote(recordName, payload, remoteRecordRevisionRef.current);
+      if (generation !== storageGenerationRef.current) return;
+      remoteRecordRevisionRef.current = revision;
+      if (pendingMessageIds.length > 0) {
+        try {
+          await acknowledgeRemoteMessages(pendingMessageIds);
+          pendingMessageIds.forEach((messageId) => pendingMessageAcksRef.current.delete(messageId));
+        } catch {
+          // Keep the acknowledgements pending so the next successful record save retries them.
         }
-      });
-      remoteRecordSaveQueueRef.current = queued.catch(() => undefined);
-      return queued;
+      }
     });
+    remoteRecordSaveQueueRef.current = save.catch(() => undefined);
     void save.catch((error) => {
       if (storageWriteVersionRef.current !== version) return;
       setToast(error instanceof Error && error.message === "record conflict" ? "记录已在其他设备更新，请刷新后重试" : "加密消息记录保存失败");
@@ -974,9 +1049,16 @@ export default function ChatApp() {
     }
   }
 
-  function relayMessageMutation(recipientId: string, payload: Exclude<RemoteMessagePayload, { kind: "message" }>): void {
+  function relayMessageMutation(recipientId: string, payload: MessageMutationPayload): void {
     if (!currentUser || !deviceEncryptionEnabled) return;
-    void sendEncryptedPayload(recipientId, payload).catch(() => setToast("消息操作同步失败，请稍后重试"));
+    const messageId = crypto.randomUUID();
+    pendingMessageMutationsRef.current.set(messageId, {
+      messageId,
+      recipientId,
+      payload,
+      generation: storageGenerationRef.current,
+    });
+    void flushMessageMutations();
   }
 
   async function sendMessage(event: FormEvent) {
@@ -1293,6 +1375,10 @@ export default function ChatApp() {
       if (encryptionEnabled) await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
       if (encryptionEnabled) await registerIdentityKeyForUser(user.username);
       setUsers(user.role === "admin" ? await fetchUsers() : []);
+      setConversations([]);
+      setActiveId("");
+      setActiveView("messages");
+      setMobileChatOpen(false);
       setHydrated(false);
       setSecureStorageReady(false);
       setDeviceEncryptionEnabled(encryptionEnabled);
@@ -1315,6 +1401,10 @@ export default function ChatApp() {
       if (encryptionEnabled) await unlockRemoteVault(user.username, password, user.vaultSalt, user.vaultIterations);
       if (encryptionEnabled) await registerIdentityKeyForUser(user.username);
       setUsers([user]);
+      setConversations([]);
+      setActiveId("");
+      setActiveView("messages");
+      setMobileChatOpen(false);
       setHydrated(false);
       setSecureStorageReady(false);
       setDeviceEncryptionEnabled(encryptionEnabled);
@@ -1343,6 +1433,14 @@ export default function ChatApp() {
     setIncomingCallState(null);
     processedCallSignalsRef.current.clear();
     pendingMessageAcksRef.current.clear();
+    pendingMessageMutationsRef.current.clear();
+    if (mutationRetryTimerRef.current !== null) {
+      window.clearTimeout(mutationRetryTimerRef.current);
+      mutationRetryTimerRef.current = null;
+    }
+    mutationRetryNotifiedRef.current = false;
+    storageGenerationRef.current += 1;
+    remoteRecordSaveQueueRef.current = Promise.resolve();
     if (currentUser) void lockRemoteVault(currentUser.username);
     void logoutRemote();
     setAccountOpen(false);
@@ -1350,6 +1448,10 @@ export default function ChatApp() {
     setHydrated(false);
     setSecureStorageReady(false);
     setDeviceEncryptionEnabled(false);
+    setConversations([]);
+    setActiveId("");
+    setActiveView("messages");
+    setMobileChatOpen(false);
     setCurrentUser(null);
     setSelfAvatar(null);
     setAuthenticated(false);
@@ -1579,6 +1681,10 @@ export default function ChatApp() {
 
   if (!authenticated) {
     return <LoginScreen initialized={serverInitialized} siteSettings={siteSettings} onLogin={login} onSetup={setup} />;
+  }
+
+  if (!hydrated) {
+    return <main className="session-loading"><div className="brand-mark">M</div><span>正在加载加密会话</span></main>;
   }
 
   return (
