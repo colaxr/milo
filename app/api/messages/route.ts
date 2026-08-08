@@ -1,5 +1,5 @@
 import { sessionUser } from "../../../server/auth";
-import { listIncomingMessages, saveEncryptedMessage, type EncryptedMessageEnvelope } from "../../../server/messages";
+import { acknowledgeIncomingMessages, listIncomingMessages, saveEncryptedMessage, type EncryptedMessageEnvelope } from "../../../server/messages";
 import { apiError, json } from "../../../server/responses";
 
 export const dynamic = "force-dynamic";
@@ -47,5 +47,19 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof Error && error.message === "RECIPIENT_KEY_MISSING") return apiError("recipient device unavailable", 409);
     if (error instanceof Error && error.message === "INVALID_MESSAGE") return apiError("invalid encrypted message", 400);
     return apiError("message unavailable", 503);
+  }
+}
+
+export async function DELETE(request: Request): Promise<Response> {
+  try {
+    const user = sessionUser(request);
+    if (!user) return apiError("unauthorized", 401);
+    const body = await request.json() as { messageIds?: unknown };
+    if (!Array.isArray(body.messageIds) || body.messageIds.length > 200 || body.messageIds.some((id) => typeof id !== "string" || !/^[a-f0-9-]{16,80}$/i.test(id))) {
+      return apiError("invalid message acknowledgements", 400);
+    }
+    return json({ acknowledged: acknowledgeIncomingMessages(user.username, body.messageIds) });
+  } catch {
+    return apiError("message acknowledgement unavailable", 503);
   }
 }

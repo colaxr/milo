@@ -26,12 +26,13 @@ test("server-renders the Milo application shell", async () => {
 });
 
 test("keeps SQLite, encrypted storage, auth, and single-container deployment wiring", async () => {
-  const [chatApp, secureStorage, auth, sqlite, recordsRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout, contactsRoute, contactsItemRoute, contactsServer, siteSettingsRoute, siteSettingsServer] = await Promise.all([
+  const [chatApp, secureStorage, auth, sqlite, recordsRoute, messagesRoute, setupRoute, usersRoute, usersItemRoute, apiClient, dockerfile, workflow, readme, packageJson, layout, contactsRoute, contactsItemRoute, contactsServer, siteSettingsRoute, siteSettingsServer] = await Promise.all([
     readFile(new URL("../app/chat-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/secure-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/sqlite.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/records/[name]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/messages/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/setup/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/users/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/users/[username]/route.ts", import.meta.url), "utf8"),
@@ -74,6 +75,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(sqlite, /PRAGMA optimize/);
   assert.match(recordsRoute, /ciphertext/);
   assert.match(recordsRoute, /ON CONFLICT\(username, name\) DO UPDATE/);
+  assert.match(recordsRoute, /record conflict/);
+  assert.match(messagesRoute, /acknowledgeIncomingMessages/);
+  assert.match(messagesRoute, /export async function DELETE/);
   assert.match(setupRoute, /createFirstAdmin/);
   assert.match(setupRoute, /sessionCookie/);
   assert.match(usersRoute, /searchUsers/);
@@ -88,6 +92,8 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(apiClient, /addRemoteContact/);
   assert.match(apiClient, /deleteRemoteContact/);
   assert.match(apiClient, /fetchRemoteMessages/);
+  assert.match(apiClient, /acknowledgeRemoteMessages/);
+  assert.match(apiClient, /limit=200/);
   assert.match(apiClient, /sendRemoteMessage/);
   assert.match(apiClient, /registerRemoteIdentityKey/);
   assert.match(apiClient, /updateRemoteUser/);
@@ -106,6 +112,9 @@ test("keeps SQLite, encrypted storage, auth, and single-container deployment wir
   assert.match(chatApp, /addRemoteContact/);
   assert.match(chatApp, /deleteRemoteContact/);
   assert.match(chatApp, /sendRemoteMessage/);
+  assert.match(chatApp, /message-edit/);
+  assert.match(chatApp, /message-recall/);
+  assert.match(chatApp, /pendingMessageAcksRef/);
   assert.match(chatApp, /decryptMessageEnvelope/);
   assert.match(chatApp, /registerIdentityKeyForUser/);
   assert.match(chatApp, /RTCPeerConnection/);

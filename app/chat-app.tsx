@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchRemoteIdentityKey, fetchRemoteMessages, fetchSession, fetchSiteSettings, fetchUsers, loginRemote, logoutRemote, registerRemoteIdentityKey, saveEncryptedRecordRemote, searchRemoteUsers, sendRemoteMessage, setupRemote, updateSiteSettings, updateRemoteUser, type SiteSettings } from "./api-client";
+import { acknowledgeRemoteMessages, addRemoteContact, createRemoteUser, deleteRemoteContact, deleteRemoteUser, fetchEncryptedRecord, fetchInitializationStatus, fetchRemoteContacts, fetchRemoteIdentityKey, fetchRemoteMessages, fetchSession, fetchSiteSettings, fetchUsers, loginRemote, logoutRemote, registerRemoteIdentityKey, saveEncryptedRecordRemote, searchRemoteUsers, sendRemoteMessage, setupRemote, updateSiteSettings, updateRemoteUser, type SiteSettings } from "./api-client";
 import { canUseDeviceEncryption, decryptMessageEnvelope, decryptRemoteRecord, encryptMessageEnvelope, encryptRemoteRecord, getIdentityPublicKey, hasRemoteVaultKey, loadEncryptedRecord, lockRemoteVault, unlockRemoteVault, type EncryptedMessageEnvelope } from "./secure-storage";
 import { normalizeUsername, type LocalUser } from "./local-auth";
 
@@ -79,12 +79,12 @@ type Conversation = {
   messages: Message[];
 };
 
-type RemoteMessagePayload = {
-  body: string;
-  replyTo?: string;
-  attachment?: Message["attachment"];
-  sentAt: string;
-};
+type RemoteMessagePayload =
+  | { kind: "message"; body: string; replyTo?: string; attachment?: Message["attachment"]; sentAt: string }
+  | { kind: "message-edit"; targetMessageId: string; body: string; sentAt: string }
+  | { kind: "message-recall"; targetMessageId: string; sentAt: string }
+  | { kind: "message-delete"; targetMessageId: string; sentAt: string }
+  | { kind: "message-reaction"; targetMessageId: string; reaction?: string; sentAt: string };
 
 type CallMode = "audio" | "video";
 
@@ -142,7 +142,10 @@ function mergeContactConversations(conversations: Conversation[], contacts: Loca
 function isRemoteMessagePayload(value: unknown): value is RemoteMessagePayload {
   if (!value || typeof value !== "object") return false;
   const payload = value as Partial<RemoteMessagePayload>;
-  return typeof payload.body === "string" && typeof payload.sentAt === "string";
+  if (typeof payload.sentAt !== "string") return false;
+  if (!payload.kind || payload.kind === "message") return typeof payload.body === "string";
+  if (!["message-edit", "message-recall", "message-delete", "message-reaction"].includes(payload.kind)) return false;
+  return typeof payload.targetMessageId === "string" && /^[a-f0-9-]{16,80}$/i.test(payload.targetMessageId);
 }
 
 function isCallSignalPayload(value: unknown): value is CallSignalPayload {
@@ -349,6 +352,9 @@ export default function ChatApp() {
   const messageLongPressTimerRef = useRef<number | null>(null);
   const contactLongPressTimerRef = useRef<number | null>(null);
   const storageWriteVersionRef = useRef(0);
+  const remoteRecordRevisionRef = useRef<number | null>(null);
+  const remoteRecordSaveQueueRef = useRef(Promise.resolve());
+  const pendingMessageAcksRef = useRef(new Set<string>());
   const messagePollInFlightRef = useRef(false);
   const conversationsRef = useRef(conversations);
   const callIdRef = useRef<string | null>(null);
@@ -611,6 +617,9 @@ export default function ChatApp() {
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
+    remoteRecordRevisionRef.current = null;
+    remoteRecordSaveQueueRef.current = Promise.resolve();
+    pendingMessageAcksRef.current.clear();
     const recordName = `conversations:${currentUser.username}`;
     void (async () => {
       try {
@@ -627,7 +636,8 @@ export default function ChatApp() {
         const remote = await fetchEncryptedRecord(recordName);
         if (cancelled) return;
         if (remote) {
-          const storedConversations = await decryptRemoteRecord<Conversation[]>(currentUser.username, recordName, remote);
+          remoteRecordRevisionRef.current = remote.revision;
+          const storedConversations = await decryptRemoteRecord<Conversation[]>(currentUser.username, recordName, remote.payload);
           const cleanedConversations = mergeContactConversations(removeLegacyDemoConversations(storedConversations), contacts);
           setConversations(cleanedConversations);
           setActiveId(cleanedConversations[0]?.id ?? "");
@@ -638,7 +648,9 @@ export default function ChatApp() {
           const legacy = currentUser.role === "admin" ? window.localStorage.getItem("milo-conversations") : null;
           const storedConversations = encryptedLocal ?? (legacy ? JSON.parse(legacy) as Conversation[] : null);
           const migrated = storedConversations ? mergeContactConversations(removeLegacyDemoConversations(storedConversations), contacts) : contacts.map(conversationFromUser);
-          if (storedConversations) await saveEncryptedRecordRemote(recordName, await encryptRemoteRecord(currentUser.username, recordName, migrated));
+          if (storedConversations) {
+            remoteRecordRevisionRef.current = await saveEncryptedRecordRemote(recordName, await encryptRemoteRecord(currentUser.username, recordName, migrated), null);
+          }
           if (cancelled) return;
           setConversations(migrated);
           setActiveId(migrated[0]?.id ?? "");
@@ -658,9 +670,26 @@ export default function ChatApp() {
     const version = storageWriteVersionRef.current + 1;
     storageWriteVersionRef.current = version;
     const recordName = `conversations:${currentUser.username}`;
-    void encryptRemoteRecord(currentUser.username, recordName, conversations)
-      .then((payload) => saveEncryptedRecordRemote(recordName, payload)).catch(() => {
-      if (storageWriteVersionRef.current === version) setToast("加密消息记录保存失败");
+    const pendingMessageIds = [...pendingMessageAcksRef.current];
+    const save = encryptRemoteRecord(currentUser.username, recordName, conversations).then((payload) => {
+      const queued = remoteRecordSaveQueueRef.current.then(async () => {
+        const revision = await saveEncryptedRecordRemote(recordName, payload, remoteRecordRevisionRef.current);
+        remoteRecordRevisionRef.current = revision;
+        if (pendingMessageIds.length > 0) {
+          try {
+            await acknowledgeRemoteMessages(pendingMessageIds);
+            pendingMessageIds.forEach((messageId) => pendingMessageAcksRef.current.delete(messageId));
+          } catch {
+            // Keep the acknowledgements pending so the next successful record save retries them.
+          }
+        }
+      });
+      remoteRecordSaveQueueRef.current = queued.catch(() => undefined);
+      return queued;
+    });
+    void save.catch((error) => {
+      if (storageWriteVersionRef.current !== version) return;
+      setToast(error instanceof Error && error.message === "record conflict" ? "记录已在其他设备更新，请刷新后重试" : "加密消息记录保存失败");
     });
   }, [conversations, currentUser, deviceEncryptionEnabled, hydrated]);
 
@@ -673,40 +702,72 @@ export default function ChatApp() {
       try {
         const [envelopes, contacts] = await Promise.all([fetchRemoteMessages(), fetchRemoteContacts()]);
         if (cancelled) return;
+        const acknowledgedIds: string[] = [];
+        const processedCallSignalIds: string[] = [];
         for (const envelope of envelopes as EncryptedMessageEnvelope[]) {
           try {
             if (processedCallSignalsRef.current.has(envelope.messageId)) continue;
             const payload = await decryptMessageEnvelope<RemoteMessagePayload | CallSignalPayload>(currentUser.username, envelope);
             if (isCallSignalPayload(payload)) {
               processedCallSignalsRef.current.add(envelope.messageId);
+              processedCallSignalIds.push(envelope.messageId);
               await handleCallSignal(payload, envelope.senderUsername, contacts, envelope.createdAt);
+              acknowledgedIds.push(envelope.messageId);
               continue;
             }
             if (!isRemoteMessagePayload(payload)) continue;
             const contact = contacts.find((item) => item.username === envelope.senderUsername);
+            let handled = false;
             setConversations((items) => {
               const withContact = items.some((item) => item.id === envelope.senderUsername)
                 ? items
                 : contact ? [...items, conversationFromUser(contact)] : items;
               const target = withContact.find((item) => item.id === envelope.senderUsername);
-              if (!target || target.messages.some((message) => message.id === envelope.messageId)) return withContact;
-              const message: Message = {
-                id: envelope.messageId,
-                body: payload.body,
-                mine: false,
-                time: formatMessageTime(new Date(payload.sentAt)),
-                status: "read",
-                replyTo: payload.replyTo,
-                attachment: payload.attachment,
-                senderUsername: envelope.senderUsername,
-                recipientUsername: currentUser.username,
-              };
-              return withContact.map((item) => item.id === envelope.senderUsername
-                ? { ...item, messages: [...item.messages, message], unread: activeId === envelope.senderUsername ? 0 : item.unread + 1 }
-                : item);
+              if (!target) return withContact;
+              if (target.messages.some((message) => message.id === envelope.messageId)) {
+                handled = true;
+                return withContact;
+              }
+              const kind = payload.kind ?? "message";
+              if (kind === "message") {
+                const message: Message = {
+                  id: envelope.messageId,
+                  body: payload.body,
+                  mine: false,
+                  time: formatMessageTime(new Date(payload.sentAt)),
+                  status: "read",
+                  replyTo: payload.replyTo,
+                  attachment: payload.attachment,
+                  senderUsername: envelope.senderUsername,
+                  recipientUsername: currentUser.username,
+                };
+                handled = true;
+                return withContact.map((item) => item.id === envelope.senderUsername
+                  ? { ...item, messages: [...item.messages, message], unread: activeId === envelope.senderUsername ? 0 : item.unread + 1 }
+                  : item);
+              }
+              const changedMessages = target.messages
+                .filter((message) => kind !== "message-delete" || message.id !== payload.targetMessageId)
+                .map((message) => {
+                  if (message.id !== payload.targetMessageId) return message;
+                  if (kind === "message-edit") return { ...message, body: payload.body, edited: true };
+                  if (kind === "message-recall") return { ...message, body: "", attachment: undefined, replyTo: undefined, reaction: undefined, edited: false, recalled: true };
+                  if (kind === "message-reaction") return { ...message, reaction: payload.reaction };
+                  return message;
+                });
+              handled = changedMessages.length !== target.messages.length || changedMessages.some((message, index) => message !== target.messages[index]);
+              return withContact.map((item) => item.id === envelope.senderUsername ? { ...item, messages: changedMessages } : item);
             });
+            if (handled) pendingMessageAcksRef.current.add(envelope.messageId);
           } catch {
             // Ignore messages that are not addressed to this device or use an unsupported key.
+          }
+        }
+        if (acknowledgedIds.length > 0) {
+          try {
+            await acknowledgeRemoteMessages(acknowledgedIds);
+          } catch {
+            processedCallSignalIds.forEach((messageId) => processedCallSignalsRef.current.delete(messageId));
           }
         }
       } finally {
@@ -901,7 +962,7 @@ export default function ChatApp() {
     try {
       await sendEncryptedPayload(
         recipientId,
-        { body: message.body, replyTo: message.replyTo, attachment: message.attachment, sentAt: new Date().toISOString() } satisfies RemoteMessagePayload,
+        { kind: "message", body: message.body, replyTo: message.replyTo, attachment: message.attachment, sentAt: new Date().toISOString() } satisfies RemoteMessagePayload,
         message.id,
       );
       setConversations((items) => items.map((item) => item.id === recipientId ? { ...item, messages: [...item.messages, message] } : item));
@@ -913,11 +974,17 @@ export default function ChatApp() {
     }
   }
 
+  function relayMessageMutation(recipientId: string, payload: Exclude<RemoteMessagePayload, { kind: "message" }>): void {
+    if (!currentUser || !deviceEncryptionEnabled) return;
+    void sendEncryptedPayload(recipientId, payload).catch(() => setToast("消息操作同步失败，请稍后重试"));
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const body = draft.trim();
     if (!body) return;
     if (editingId) {
+      const editedMessage = active?.messages.find((message) => message.id === editingId);
       setConversations((items) =>
         items.map((item) =>
           item.id === activeId
@@ -928,6 +995,7 @@ export default function ChatApp() {
       setDraft("");
       setEditingId(null);
       setToast("消息已修改");
+      if (editedMessage?.mine) relayMessageMutation(activeId, { kind: "message-edit", targetMessageId: editingId, body, sentAt: new Date().toISOString() });
       return;
     }
     const message: Message = {
@@ -947,6 +1015,9 @@ export default function ChatApp() {
   }
 
   function reactTo(messageId: string) {
+    const target = active?.messages.find((message) => message.id === messageId);
+    if (!target) return;
+    const reaction = target.reaction ? undefined : "❤️";
     setConversations((items) =>
       items.map((item) =>
         item.id === activeId
@@ -959,6 +1030,8 @@ export default function ChatApp() {
           : item,
       ),
     );
+    const recipientId = target.mine ? activeId : target.senderUsername ?? activeId;
+    relayMessageMutation(recipientId, { kind: "message-reaction", targetMessageId: messageId, reaction, sentAt: new Date().toISOString() });
   }
 
   function startMessageLongPress(event: ReactPointerEvent<HTMLButtonElement>, messageId: string) {
@@ -1024,12 +1097,16 @@ export default function ChatApp() {
   }
 
   function deleteMessage(messageId: string) {
+    const target = active?.messages.find((message) => message.id === messageId);
     setConversations((items) => items.map((item) => item.id === activeId ? { ...item, messages: item.messages.filter((message) => message.id !== messageId) } : item));
     setActionMessageId(null);
     setToast("消息已删除");
+    if (target?.mine) relayMessageMutation(activeId, { kind: "message-delete", targetMessageId: messageId, sentAt: new Date().toISOString() });
   }
 
   function recallMessage(messageId: string) {
+    const target = active?.messages.find((message) => message.id === messageId);
+    if (!target?.mine) return;
     setConversations((items) => items.map((item) =>
       item.id === activeId
         ? { ...item, messages: item.messages.map((message) => message.id === messageId ? { ...message, body: "", attachment: undefined, replyTo: undefined, reaction: undefined, edited: false, recalled: true } : message) }
@@ -1037,6 +1114,7 @@ export default function ChatApp() {
     ));
     setActionMessageId(null);
     setToast("消息已撤回");
+    relayMessageMutation(activeId, { kind: "message-recall", targetMessageId: messageId, sentAt: new Date().toISOString() });
   }
 
   async function copyMessage(message: Message) {
@@ -1257,6 +1335,14 @@ export default function ChatApp() {
   }
 
   function logout() {
+    const pending = incomingCallRef.current;
+    if (pending && currentUser && deviceEncryptionEnabled) {
+      void sendCallSignal(pending.caller.id, { kind: "call-reject", callId: pending.callId }).catch(() => undefined);
+    }
+    cleanupCall(true);
+    setIncomingCallState(null);
+    processedCallSignalsRef.current.clear();
+    pendingMessageAcksRef.current.clear();
     if (currentUser) void lockRemoteVault(currentUser.username);
     void logoutRemote();
     setAccountOpen(false);
