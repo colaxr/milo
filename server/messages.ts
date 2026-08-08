@@ -18,6 +18,8 @@ export type EncryptedMessageEnvelope = {
 type IdentityKeyRow = { public_key: string };
 type MessageRow = { id: string; envelope: string; created_at: string };
 
+const MESSAGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 function normalizeUsername(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -56,10 +58,17 @@ export function saveEncryptedMessage(senderUsername: string, envelope: Encrypted
   if (!getIdentityPublicKey(recipient)) throw new Error("RECIPIENT_KEY_MISSING");
   const now = new Date().toISOString();
   const database = getDatabase();
+  database.prepare("DELETE FROM messages WHERE created_at < ?").run(new Date(Date.now() - MESSAGE_RETENTION_MS).toISOString());
+  const storedEnvelope: EncryptedMessageEnvelope = {
+    ...envelope,
+    senderUsername: sender,
+    recipientUsername: recipient,
+    createdAt: now,
+  };
   database.prepare(`
     INSERT OR IGNORE INTO messages (id, sender_username, recipient_username, envelope, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run(envelope.messageId, sender, recipient, JSON.stringify(envelope), now);
+  `).run(storedEnvelope.messageId, sender, recipient, JSON.stringify(storedEnvelope), now);
   database.prepare(`
     INSERT OR IGNORE INTO contacts (owner_username, contact_username, created_at)
     VALUES (?, ?, ?)
@@ -68,7 +77,9 @@ export function saveEncryptedMessage(senderUsername: string, envelope: Encrypted
 }
 
 export function listIncomingMessages(username: string, limit = 100): EncryptedMessageEnvelope[] {
-  const rows = getDatabase().prepare(`
+  const database = getDatabase();
+  database.prepare("DELETE FROM messages WHERE created_at < ?").run(new Date(Date.now() - MESSAGE_RETENTION_MS).toISOString());
+  const rows = database.prepare(`
     SELECT id, envelope, created_at
     FROM messages
     WHERE recipient_username = ?
@@ -76,4 +87,15 @@ export function listIncomingMessages(username: string, limit = 100): EncryptedMe
     LIMIT ?
   `).all(normalizeUsername(username), Math.min(Math.max(limit, 1), 200)) as MessageRow[];
   return rows.reverse().map((row) => JSON.parse(row.envelope) as EncryptedMessageEnvelope);
+}
+
+export function acknowledgeIncomingMessages(username: string, messageIds: string[]): number {
+  const normalizedIds = [...new Set(messageIds)].filter((id) => /^[a-f0-9-]{16,80}$/i.test(id)).slice(0, 200);
+  if (normalizedIds.length === 0) return 0;
+  const placeholders = normalizedIds.map(() => "?").join(", ");
+  const result = getDatabase().prepare(`
+    DELETE FROM messages
+    WHERE recipient_username = ? AND id IN (${placeholders})
+  `).run(username.trim().toLowerCase(), ...normalizedIds);
+  return result.changes;
 }
